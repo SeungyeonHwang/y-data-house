@@ -85,6 +85,11 @@ class VideoDownloader:
             'no_warnings': True,
             'embedsubtitles': False,
             'logger': self.yt_dlp_logger,
+            'http_headers': {
+                'User-Agent': settings.user_agent,
+            },
+            # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
+            'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
         }
         
         try:
@@ -117,6 +122,11 @@ class VideoDownloader:
             'quiet': True,
             'no_warnings': True,
             'logger': self.yt_dlp_logger,
+            'http_headers': {
+                'User-Agent': settings.user_agent,
+            },
+            # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
+            'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
         }
         
         try:
@@ -207,10 +217,12 @@ class VideoDownloader:
             'no_warnings': True,
             'verbose': False,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (compatible; ydh/1.0)',
+                'User-Agent': settings.user_agent,
             },
             'retries': 3,
             'fragment_retries': 3,
+            # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
+            'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
             # 자막 다운로드 옵션
             'writesubtitles': True,
             'writeautomaticsub': True,

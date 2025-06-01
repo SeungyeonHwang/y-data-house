@@ -22,9 +22,16 @@ class Settings(BaseSettings):
     
     # 다운로드 옵션
     max_quality: str = "1080p"
-    max_downloads_per_run: int = -1
+    max_downloads_per_run: int = 0  # 무제한으로 변경
     delete_vtt_after_conversion: bool = True
     detailed_debug: bool = False
+    
+    # 브라우저 쿠키 설정 (봇 감지 회피)
+    browser: str = "chrome"
+    use_browser_cookies: bool = True
+    
+    # User-Agent 설정 (실제 브라우저로 위장)
+    user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     
     # 프록시 설정
     use_proxy: bool = False
