@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     
     # 다운로드 옵션
     max_quality: str = "1080p"
-    max_downloads_per_run: int = 2  # 테스트용으로 5개로 제한
+    max_downloads_per_run: int = -1
     delete_vtt_after_conversion: bool = True
     detailed_debug: bool = False
     
