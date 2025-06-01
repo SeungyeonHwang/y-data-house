@@ -1,0 +1,148 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Y-Data-House Project Rules
+
+## Project Overview
+Y-Data-House is a YouTube video downloader and transcription system that automatically creates Obsidian vault notes with structured metadata. The system downloads videos, extracts transcripts, and generates markdown files with YAML frontmatter for knowledge management.
+
+*설명은 무조건 한글로 부탁해*
+## Architecture & Structure
+
+### Package Layout
+- Use `src/ydh/` layout for proper packaging (not flat layout)
+- Main package: `src/ydh/` contains all core modules
+- Vault storage: `vault/` for Obsidian notes
+- Entry point: `python -m ydh` for CLI commands
+
+### Core Modules
+1. **config.py** - Configuration management using Pydantic BaseSettings
+2. **downloader.py** - yt-dlp wrapper with download archive functionality
+3. **transcript.py** - YouTube transcript extraction using youtube-transcript-api
+4. **converter.py** - VTT/SRT to clean text conversion
+5. **vault_writer.py** - Markdown generation with YAML frontmatter
+6. **progress.py** - Progress tracking (JSON → SQLite migration path)
+7. **cli.py** - Click-based CLI interface
+8. **flow.py** - Prefect workflow orchestration
+
+## Obsidian Vault Structure
+
+```
+vault/
+├─ 10_videos/
+│   └─ {channel_name}/
+│       └─ {YYYY}/
+│           └─ {YYYYMMDD}_{title_slug}/
+│               ├─ video.mp4
+│               ├─ captions.txt
+│               └─ captions.md
+└─ 90_indices/  # Future: Chroma DB storage
+```
+
+### Markdown Template
+```yaml
+---
+title: "{video_title}"
+upload: {YYYY-MM-DD}
+channel: "{channel_name}"
+video_id: {youtube_id}
+topic: [tag1, tag2]
+source_url: {youtube_url}
+---
+
+{transcript_content}
+```
+
+## Development Guidelines
+
+### Dependencies
+- **yt-dlp**: Video downloading with `--download-archive` for duplicate prevention
+- **youtube-transcript-api**: Primary transcript source
+- **pydantic**: Configuration management
+- **click**: CLI framework
+- **prefect**: Workflow orchestration
+- **pathlib**: File system operations
+
+### Duplicate Prevention Strategy
+1. **yt-dlp download-archive**: Skip network fetch for existing IDs
+2. **Progress DB**: Track success/failure for retry capability
+3. **File existence check**: Skip processing if Vault file exists
+
+### Logging
+- Use `logging.handlers.TimedRotatingFileHandler` for daily log rotation
+- Structured logging for batch operations
+
+## CLI Commands
+
+### Primary Commands
+- `ydh ingest <channel_url>` - Download new videos from channel
+- `ydh convert` - Process existing video files
+- `ydh batch run` - Execute full workflow
+
+### Workflow Steps
+1. Channel crawl → video metadata extraction
+2. Duplicate filtering via archive/DB
+3. New video download (mp4 + captions)
+4. Transcript cleaning and processing
+5. Markdown note generation
+6. Vault organization and storage
+
+## Code Style & Patterns
+
+### Configuration
+```python
+# config.py example
+from pydantic import BaseSettings
+
+class Settings(BaseSettings):
+    vault_root: Path = Path.home() / "vault"
+    browser: str = "firefox"
+    language: str = "ko"
+    
+    class Config:
+        env_file = Path.home() / ".ydh.toml"
+```
+
+### Error Handling
+- Graceful fallbacks for transcript sources (API → VTT → SRT)
+- Retry mechanisms for network operations
+- Continue processing on individual video failures
+
+### File Operations
+- Use `pathlib.Path` for all file operations
+- Create directories with `mkdir(parents=True, exist_ok=True)`
+- Check file existence before processing
+
+## Future Extensions
+1. **Dataview Integration**: Query YAML fields for visualization
+2. **RAG System**: DeepSeek integration for content search
+3. **Vector Database**: Chroma DB in `90_indices/`
+4. **Topic Modeling**: JupyMD plugin integration
+5. **Canvas Generation**: Automated Obsidian canvas creation
+
+## Testing Strategy
+- Unit tests for each module
+- Integration tests for workflow
+- Mock external services (yt-dlp, YouTube API)
+- Test with sample channels and videos
+
+## Performance Considerations
+- Parallel processing where possible
+- Efficient duplicate checking
+- Minimal memory footprint for large channels
+- Progress persistence for long-running operations
+
+## Security & Privacy
+- Respect YouTube ToS
+- Rate limiting for API calls
+- Local storage only (no cloud uploads)
+- User consent for data collection
+
+When implementing features:
+1. Follow the modular design pattern
+2. Implement duplicate prevention at multiple layers
+3. Use structured logging for debugging
+4. Design for extensibility (plugin architecture)
+5. Maintain backward compatibility for vault structure
