@@ -312,6 +312,33 @@ class VideoDownloader:
         safe_channel_name = re.sub(r'[\\/*?:"<>|]', "_", channel_name)
         return settings.download_path / f"{safe_channel_name}_downloaded.txt"
     
+    def _load_downloaded_archive(self, channel_name: str) -> Set[str]:
+        """
+        다운로드 아카이브 파일에서 이미 다운로드된 영상 ID 목록을 로드합니다.
+        
+        Args:
+            channel_name: 채널 이름
+            
+        Returns:
+            Set[str]: 다운로드된 영상 ID 목록
+        """
+        archive_path = self.get_downloaded_archive_path(channel_name)
+        downloaded_ids = set()
+        
+        if archive_path.exists():
+            try:
+                with open(archive_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and line.startswith('youtube '):
+                            video_id = line.split(' ', 1)[1]
+                            downloaded_ids.add(video_id)
+                logger.debug(f"아카이브에서 {len(downloaded_ids)}개 영상 ID 로드완료")
+            except Exception as e:
+                logger.warning(f"아카이브 파일 읽기 실패: {e}")
+        
+        return downloaded_ids
+    
     def download_channel_videos(self, channel_url: str, channel_name: str = "") -> Dict[str, int]:
         """
         채널의 모든 새 영상을 다운로드합니다 (최신 영상부터).
@@ -333,19 +360,34 @@ class VideoDownloader:
             logger.warning("다운로드할 영상이 없습니다.")
             return {"total": 0, "downloaded": 0, "skipped": 0, "failed": 0}
         
-        logger.info(f"YouTube 기본 순서(최신순)로 영상을 처리합니다.")
+        logger.info(f"채널에서 총 {len(videos)}개 영상을 발견했습니다.")
+        
+        # 🚀 이미 다운로드된 영상 ID 목록 로드
+        downloaded_ids = self._load_downloaded_archive(channel_name)
+        logger.info(f"이미 다운로드된 영상: {len(downloaded_ids)}개")
+        
+        # 🔥 사전 필터링: 이미 다운로드된 영상 제외
+        new_videos = [v for v in videos if v.get('id') not in downloaded_ids]
+        skipped_count = len(videos) - len(new_videos)
+        
+        if not new_videos:
+            logger.info("모든 영상이 이미 다운로드되었습니다.")
+            return {"total": len(videos), "downloaded": 0, "skipped": skipped_count, "failed": 0}
+        
+        logger.info(f"새로운 영상: {len(new_videos)}개 (기존 {skipped_count}개 건너뛰기)")
         
         # 다운로드 수 제한 적용
         if settings.max_downloads_per_run > 0:
-            original_count = len(videos)
-            videos = videos[:settings.max_downloads_per_run]
-            if original_count > len(videos):
-                logger.info(f"다운로드 수 제한: {original_count}개 중 {len(videos)}개만 다운로드 (최신 순)")
+            original_count = len(new_videos)
+            new_videos = new_videos[:settings.max_downloads_per_run]
+            if original_count > len(new_videos):
+                logger.info(f"다운로드 수 제한: {original_count}개 중 {len(new_videos)}개만 다운로드 (최신 순)")
         
-        logger.info(f"새로 다운로드할 영상: {len(videos)}개 (총 {len(videos)}개 중)")
+        logger.info(f"실제 다운로드 대상: {len(new_videos)}개")
+        videos = new_videos  # 필터링된 목록으로 교체
         
         # 다운로드 진행 상황 추적
-        stats = {"total": len(videos), "downloaded": 0, "skipped": 0, "failed": 0}
+        stats = {"total": len(videos), "downloaded": 0, "skipped": skipped_count, "failed": 0}
         
         # 프로그레스 바 초기화
         pbar = tqdm(
