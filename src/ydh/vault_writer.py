@@ -21,18 +21,179 @@ class VaultWriter:
         """VaultWriter 초기화."""
         # Vault 구조 확인/생성
         settings.ensure_vault_structure()
+        
+        # 🔥 NEW: Obsidian 최적화 구조 생성
+        self.create_templates_folder()
+        self.create_chroma_structure()
     
     def sanitize_filename(self, name: str) -> str:
         """
-        파일/폴더 이름에 사용할 수 없는 문자를 '_'로 대체합니다.
+        파일/폴더 이름을 Obsidian 및 크로스플랫폼에 최적화합니다.
         
         Args:
             name: 원본 이름
             
         Returns:
-            str: 정리된 이름
+            str: 정리된 이름 (공백은 하이픈으로, 특수문자 제거)
         """
-        return re.sub(r'[\\/*?:"<>|]', "_", name)
+        # 1. 특수문자를 언더스코어로 변경
+        cleaned = re.sub(r'[\\/*?:"<>|]', "_", name)
+        
+        # 2. 공백을 하이픈으로 변경 (Obsidian 링크 최적화)
+        cleaned = re.sub(r'\s+', '-', cleaned)
+        
+        # 3. 연속된 하이픈/언더스코어 정리
+        cleaned = re.sub(r'[-_]{2,}', '-', cleaned)
+        
+        # 4. 앞뒤 하이픈/언더스코어 제거
+        cleaned = cleaned.strip('-_')
+        
+        return cleaned
+    
+    def format_duration(self, duration_seconds: int) -> str:
+        """
+        초 단위 duration을 MM:SS 또는 HH:MM:SS 형식으로 변환합니다.
+        
+        Args:
+            duration_seconds: 초 단위 시간
+            
+        Returns:
+            str: 포맷된 시간 문자열
+        """
+        if duration_seconds <= 0:
+            return "0:00"
+        
+        hours = duration_seconds // 3600
+        minutes = (duration_seconds % 3600) // 60
+        seconds = duration_seconds % 60
+        
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            return f"{minutes}:{seconds:02d}"
+    
+    def extract_excerpt(self, transcript_text: str, max_length: int = 500) -> str:
+        """
+        자막 텍스트에서 첫 500자 excerpt를 추출합니다.
+        
+        Args:
+            transcript_text: 자막 텍스트
+            max_length: 최대 길이
+            
+        Returns:
+            str: excerpt 텍스트
+        """
+        if not transcript_text:
+            return ""
+        
+        # 정리된 텍스트에서 추출
+        cleaned_text = CaptionConverter.clean_transcript_text(transcript_text)
+        
+        if len(cleaned_text) <= max_length:
+            return cleaned_text
+        
+        # 문장 단위로 자르기 (500자 내에서)
+        excerpt = cleaned_text[:max_length]
+        
+        # 마지막 문장이 잘리지 않도록 조정
+        last_period = excerpt.rfind('.')
+        last_question = excerpt.rfind('?')
+        last_exclamation = excerpt.rfind('!')
+        
+        last_sentence_end = max(last_period, last_question, last_exclamation)
+        
+        if last_sentence_end > max_length * 0.8:  # 80% 이상이면 문장 끝에서 자르기
+            excerpt = excerpt[:last_sentence_end + 1]
+        else:
+            excerpt = excerpt + "..."
+        
+        return excerpt.strip()
+    
+    def normalize_hashtags(self, tags: List[str]) -> List[str]:
+        """
+        해시태그를 소문자·하이픈으로 정규화합니다.
+        
+        Args:
+            tags: 원본 태그 리스트
+            
+        Returns:
+            List[str]: 정규화된 태그 리스트
+        """
+        normalized_tags = []
+        
+        for tag in tags:
+            if not tag:
+                continue
+            
+            # 1. 소문자로 변환
+            normalized = tag.lower()
+            
+            # 2. 공백을 하이픈으로 변경
+            normalized = re.sub(r'\s+', '-', normalized)
+            
+            # 3. 특수문자 제거 (알파벳, 숫자, 하이픈만 허용)
+            normalized = re.sub(r'[^\w\-가-힣]', '', normalized)
+            
+            # 4. 연속된 하이픈 정리
+            normalized = re.sub(r'-{2,}', '-', normalized)
+            
+            # 5. 앞뒤 하이픈 제거
+            normalized = normalized.strip('-')
+            
+            if normalized and normalized not in normalized_tags:
+                normalized_tags.append(normalized)
+        
+        return normalized_tags
+    
+    def format_transcript_paragraphs(self, transcript_text: str) -> str:
+        """
+        자막 텍스트를 3-4문장마다 문단으로 나눕니다.
+        
+        Args:
+            transcript_text: 원본 자막 텍스트
+            
+        Returns:
+            str: 문단으로 나뉜 자막 텍스트
+        """
+        if not transcript_text:
+            return ""
+        
+        # 정리된 텍스트 얻기
+        cleaned_text = CaptionConverter.clean_transcript_text(transcript_text)
+        
+        # 문장 단위로 분리
+        sentences = CaptionConverter.split_into_sentences(cleaned_text)
+        
+        if not sentences:
+            return cleaned_text
+        
+        # 3-4문장씩 문단으로 그룹화
+        paragraphs = []
+        current_paragraph = []
+        
+        for i, sentence in enumerate(sentences):
+            current_paragraph.append(sentence)
+            
+            # 3-4문장마다 또는 마지막 문장일 때 문단 완성
+            if len(current_paragraph) >= 3 and (
+                len(current_paragraph) == 4 or 
+                i == len(sentences) - 1 or
+                len(' '.join(current_paragraph)) > 200  # 너무 긴 문단 방지
+            ):
+                paragraph_text = '. '.join(current_paragraph)
+                if not paragraph_text.endswith('.'):
+                    paragraph_text += '.'
+                paragraphs.append(paragraph_text)
+                current_paragraph = []
+        
+        # 남은 문장들 처리
+        if current_paragraph:
+            paragraph_text = '. '.join(current_paragraph)
+            if not paragraph_text.endswith('.'):
+                paragraph_text += '.'
+            paragraphs.append(paragraph_text)
+        
+        return '\n\n'.join(paragraphs)
     
     def extract_channel_name_from_url(self, channel_url: str) -> str:
         """
@@ -102,13 +263,14 @@ class VaultWriter:
         return vault_path
     
     def generate_video_metadata(self, video_info: Dict[str, Any], 
-                               channel_name: str) -> Dict[str, Any]:
+                               channel_name: str, transcript_text: str = "") -> Dict[str, Any]:
         """
         비디오용 메타데이터를 생성합니다.
         
         Args:
             video_info: 비디오 정보
             channel_name: 채널 이름
+            transcript_text: 자막 텍스트 (excerpt 생성용)
             
         Returns:
             Dict[str, Any]: YAML frontmatter용 메타데이터
@@ -137,21 +299,29 @@ class VaultWriter:
             hashtags = re.findall(r'#(\w+)', description)
             tags.extend(hashtags[:5])  # 최대 5개까지
         
-        # 중복 제거
-        tags = list(set(tags))
+        # 🔥 NEW: 해시태그 정규화
+        normalized_tags = self.normalize_hashtags(tags)
         
         # 소스 URL 생성
         source_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else ""
+        
+        # 🔥 NEW: duration을 시간 형식으로 변환
+        duration_formatted = self.format_duration(duration)
+        
+        # 🔥 NEW: excerpt 생성
+        excerpt = self.extract_excerpt(transcript_text, 500)
         
         metadata = {
             'title': title,
             'upload': formatted_date,
             'channel': uploader,
             'video_id': video_id,
-            'topic': tags,
+            'topic': normalized_tags,
             'source_url': source_url,
+            'duration': duration_formatted,
             'duration_seconds': duration,
             'view_count': view_count,
+            'excerpt': excerpt,
             'created_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
         
@@ -170,7 +340,8 @@ class VaultWriter:
         Returns:
             str: 완성된 마크다운 콘텐츠
         """
-        metadata = self.generate_video_metadata(video_info, channel_name)
+        # 🔥 UPDATED: transcript_text를 메타데이터 생성에 전달
+        metadata = self.generate_video_metadata(video_info, channel_name, transcript_text)
         
         # YAML frontmatter 생성
         yaml_content = "---\n"
@@ -198,11 +369,7 @@ class VaultWriter:
         content += f"- **제목**: {metadata['title']}\n"
         content += f"- **채널**: {metadata['channel']}\n"
         content += f"- **업로드**: {metadata['upload']}\n"
-        
-        if metadata.get('duration_seconds'):
-            minutes = metadata['duration_seconds'] // 60
-            seconds = metadata['duration_seconds'] % 60
-            content += f"- **길이**: {minutes}분 {seconds}초\n"
+        content += f"- **길이**: {metadata['duration']}\n"
         
         if metadata.get('view_count'):
             content += f"- **조회수**: {metadata['view_count']:,}회\n"
@@ -213,21 +380,9 @@ class VaultWriter:
         if transcript_text:
             content += "## 📝 자막 내용\n\n"
             
-            # 자막 텍스트 정리
-            cleaned_transcript = CaptionConverter.clean_transcript_text(transcript_text)
-            
-            # 문장 단위로 분리하여 가독성 향상
-            sentences = CaptionConverter.split_into_sentences(cleaned_transcript)
-            
-            if sentences:
-                # 문장을 문단으로 그룹화 (5문장씩)
-                for i in range(0, len(sentences), 5):
-                    paragraph = ". ".join(sentences[i:i+5])
-                    if paragraph:
-                        content += f"{paragraph}.\n\n"
-            else:
-                # 문장 분리가 안 된 경우 원본 사용
-                content += f"{cleaned_transcript}\n\n"
+            # 🔥 NEW: 3-4문장마다 문단으로 나누기
+            formatted_transcript = self.format_transcript_paragraphs(transcript_text)
+            content += f"{formatted_transcript}\n\n"
         else:
             content += "## 📝 자막 내용\n\n"
             content += "*자막을 사용할 수 없습니다.*\n\n"
@@ -542,4 +697,359 @@ class VaultWriter:
         if cleaned_count > 0:
             logger.info(f"downloads 폴더 정리 완료: {cleaned_count}개 폴더 삭제")
         
-        return cleaned_count 
+        return cleaned_count
+    
+    def create_templates_folder(self) -> None:
+        """
+        Obsidian 템플릿 폴더와 기본 템플릿들을 생성합니다.
+        """
+        templates_path = settings.vault_root / "00_templates"
+        templates_path.mkdir(parents=True, exist_ok=True)
+        
+        # Dataview 템플릿 생성
+        self._create_dataview_template(templates_path)
+        
+        # AI Assistant 설정 안내 생성
+        self._create_ai_settings_guide(templates_path)
+        
+        logger.info(f"템플릿 폴더 생성 완료: {templates_path}")
+    
+    def _create_dataview_template(self, templates_path: Path) -> None:
+        """Dataview 쿼리 템플릿을 생성합니다."""
+        dataview_template = templates_path / "dataview.md"
+        
+        if dataview_template.exists():
+            return
+        
+        template_content = '''# 📊 Dataview 쿼리 모음
+
+## 🎬 영상 통계
+
+### 채널별 영상 수
+```dataview
+TABLE 
+    length(rows) as "영상 수",
+    sum(rows.duration_seconds) / 60 as "총 시간(분)"
+FROM "10_videos"
+GROUP BY channel
+SORT length(rows) DESC
+```
+
+### 최근 업로드 영상 (30일)
+```dataview
+TABLE 
+    title as "제목",
+    channel as "채널", 
+    upload as "업로드일",
+    duration as "길이"
+FROM "10_videos"
+WHERE upload >= date(today) - dur(30 days)
+SORT upload DESC
+LIMIT 20
+```
+
+### 긴 영상 (30분 이상)
+```dataview
+TABLE 
+    title as "제목",
+    channel as "채널",
+    duration as "길이",
+    view_count as "조회수"
+FROM "10_videos"
+WHERE duration_seconds > 1800
+SORT duration_seconds DESC
+```
+
+### 인기 영상 (조회수 기준)
+```dataview
+TABLE 
+    title as "제목",
+    channel as "채널",
+    view_count as "조회수",
+    upload as "업로드일"
+FROM "10_videos"
+WHERE view_count > 0
+SORT view_count DESC
+LIMIT 20
+```
+
+## 🏷️ 태그 분석
+
+### 태그별 영상 수
+```dataview
+TABLE 
+    length(rows) as "영상 수"
+FROM "10_videos"
+FLATTEN topic as tag
+GROUP BY tag
+SORT length(rows) DESC
+```
+
+### 특정 태그가 포함된 영상
+```dataview
+TABLE 
+    title as "제목",
+    channel as "채널",
+    topic as "태그"
+FROM "10_videos"
+WHERE contains(topic, "부동산")
+SORT upload DESC
+```
+
+## 📈 시간 분석
+
+### 월별 업로드 통계
+```dataview
+TABLE 
+    length(rows) as "영상 수",
+    sum(rows.view_count) as "총 조회수"
+FROM "10_videos"
+GROUP BY dateformat(upload, "yyyy-MM") as 월
+SORT 월 DESC
+```
+
+### 요일별 업로드 패턴
+```dataview
+TABLE 
+    length(rows) as "영상 수"
+FROM "10_videos"
+GROUP BY dateformat(upload, "cccc") as 요일
+SORT length(rows) DESC
+```
+
+## 🔍 검색 및 필터
+
+### Excerpt 포함 영상 목록
+```dataview
+TABLE 
+    title as "제목",
+    excerpt as "요약" 
+FROM "10_videos"
+WHERE excerpt != ""
+SORT upload DESC
+LIMIT 10
+```
+
+### 특정 키워드 검색
+```dataview
+LIST
+FROM "10_videos"
+WHERE contains(title, "도쿄") OR contains(excerpt, "도쿄")
+SORT upload DESC
+```
+
+---
+
+💡 **사용법**: 
+- 위 쿼리들을 복사해서 노트에 붙여넣기
+- `"부동산"` 등의 검색어를 원하는 키워드로 변경
+- 날짜 범위나 정렬 조건을 필요에 따라 수정
+'''
+        
+        with open(dataview_template, 'w', encoding='utf-8') as f:
+            f.write(template_content)
+        
+        logger.debug(f"Dataview 템플릿 생성: {dataview_template}")
+    
+    def _create_ai_settings_guide(self, templates_path: Path) -> None:
+        """AI Assistant 설정 안내를 생성합니다."""
+        ai_guide = templates_path / "ai-assistant-setup.md"
+        
+        if ai_guide.exists():
+            return
+        
+        guide_content = '''# 🤖 AI Assistant 설정 가이드
+
+## Obsidian AI Assistant 최적화
+
+### 1. 컨텍스트 설정
+```json
+{
+  "max_tokens": 3000,
+  "temperature": 0.7,
+  "model": "deepseek-chat"
+}
+```
+
+### 2. 자막 분석용 프롬프트
+
+#### 📝 요약 생성
+```
+이 영상 자막을 3-4문장으로 요약해주세요:
+
+{{excerpt}}
+```
+
+#### 🏷️ 태그 추출
+```
+다음 자막에서 주요 키워드 5-7개를 소문자-하이픈 형태로 추출해주세요:
+예) haneda-innovation-city, tokyo-real-estate
+
+{{excerpt}}
+```
+
+#### ❓ 질문 생성
+```
+이 영상 내용을 바탕으로 토론할 만한 질문 3개를 만들어주세요:
+
+{{excerpt}}
+```
+
+#### 🔗 연관 주제 찾기
+```
+이 영상과 관련된 추가 학습 주제를 제안해주세요:
+
+제목: {{title}}
+내용: {{excerpt}}
+```
+
+### 3. Vault 전체 검색
+
+#### 📊 통계 분석
+```
+vault에서 "부동산" 관련 영상들의 주요 트렌드를 분석해주세요.
+```
+
+#### 🎯 맞춤 추천
+```
+{{title}} 영상을 본 사람이 관심 가질만한 다른 영상들을 vault에서 찾아주세요.
+```
+
+---
+
+💡 **팁**: 
+- excerpt 필드로 3000 토큰 내에서 10-15분 영상 전체 질의 가능
+- Dataview 쿼리와 AI 분석을 조합하여 인사이트 도출
+- 채널별/태그별 패턴 분석에 AI 활용
+'''
+        
+        with open(ai_guide, 'w', encoding='utf-8') as f:
+            f.write(guide_content)
+        
+        logger.debug(f"AI 설정 안내 생성: {ai_guide}")
+    
+    def create_chroma_structure(self) -> None:
+        """
+        Chroma DB 저장을 위한 vault/90_indices 구조를 생성합니다.
+        """
+        indices_path = settings.vault_root / "90_indices"
+        chroma_path = indices_path / "chroma"
+        
+        indices_path.mkdir(parents=True, exist_ok=True)
+        chroma_path.mkdir(parents=True, exist_ok=True)
+        
+        # embed.py 스크립트 생성
+        self._create_embed_script(indices_path)
+        
+        logger.info(f"Chroma 구조 생성 완료: {chroma_path}")
+    
+    def _create_embed_script(self, indices_path: Path) -> None:
+        """Chroma 임베딩 스크립트를 생성합니다."""
+        embed_script = indices_path / "embed.py"
+        
+        if embed_script.exists():
+            return
+        
+        script_content = '''#!/usr/bin/env python3
+"""
+Vault 영상 자막을 Chroma DB에 임베딩하는 스크립트
+실행 경로: vault/10_videos → vault/90_indices/chroma
+"""
+
+import sys
+from pathlib import Path
+import yaml
+import chromadb
+from chromadb.config import Settings as ChromaSettings
+
+# Vault 경로 설정
+VAULT_ROOT = Path(__file__).parent.parent
+VIDEOS_PATH = VAULT_ROOT / "10_videos"
+CHROMA_PATH = VAULT_ROOT / "90_indices" / "chroma"
+
+def main():
+    """메인 임베딩 실행 함수"""
+    print(f"🔍 영상 검색: {VIDEOS_PATH}")
+    print(f"💾 Chroma 저장: {CHROMA_PATH}")
+    
+    # Chroma 클라이언트 초기화
+    client = chromadb.PersistentClient(
+        path=str(CHROMA_PATH),
+        settings=ChromaSettings(anonymized_telemetry=False)
+    )
+    
+    collection = client.get_or_create_collection(
+        name="video_transcripts",
+        metadata={"description": "YouTube 영상 자막 임베딩"}
+    )
+    
+    processed_count = 0
+    
+    # 모든 captions.md 파일 처리
+    for captions_file in VIDEOS_PATH.rglob("captions.md"):
+        try:
+            with open(captions_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # YAML frontmatter 파싱
+            if content.startswith('---'):
+                parts = content.split('---', 2)
+                if len(parts) >= 3:
+                    metadata = yaml.safe_load(parts[1])
+                    transcript = parts[2].strip()
+                    
+                    # Chroma에 추가
+                    collection.add(
+                        documents=[transcript],
+                        metadatas=[{
+                            "title": metadata.get("title", ""),
+                            "channel": metadata.get("channel", ""),
+                            "video_id": metadata.get("video_id", ""),
+                            "upload": metadata.get("upload", ""),
+                            "duration": metadata.get("duration", ""),
+                            "excerpt": metadata.get("excerpt", ""),
+                            "file_path": str(captions_file.relative_to(VAULT_ROOT))
+                        }],
+                        ids=[metadata.get("video_id", f"video_{processed_count}")]
+                    )
+                    
+                    processed_count += 1
+                    print(f"✅ 처리됨: {metadata.get('title', 'Unknown')}")
+                    
+        except Exception as e:
+            print(f"❌ 오류: {captions_file} - {e}")
+            continue
+    
+    print(f"\\n🎉 완료: {processed_count}개 영상 임베딩")
+
+def search_example(query: str, n_results: int = 5):
+    """검색 예시 함수"""
+    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+    collection = client.get_collection("video_transcripts")
+    
+    results = collection.query(
+        query_texts=[query],
+        n_results=n_results
+    )
+    
+    print(f"\\n🔍 검색: '{query}'")
+    for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
+        print(f"{i+1}. {metadata['title']} ({metadata['channel']})")
+        print(f"   {metadata['excerpt'][:100]}...")
+        print()
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "search":
+        query = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "도쿄 부동산"
+        search_example(query)
+    else:
+        main()
+'''
+        
+        with open(embed_script, 'w', encoding='utf-8') as f:
+            f.write(script_content)
+        
+        # 실행 권한 부여
+        embed_script.chmod(0o755)
+        
+        logger.debug(f"임베딩 스크립트 생성: {embed_script}") 

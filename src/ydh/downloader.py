@@ -302,7 +302,7 @@ class VideoDownloader:
     
     def download_channel_videos(self, channel_url: str, channel_name: str = "") -> Dict[str, int]:
         """
-        채널의 모든 새 영상을 다운로드합니다.
+        채널의 모든 새 영상을 다운로드합니다 (최신 영상부터).
         
         Args:
             channel_url: 채널 URL
@@ -321,12 +321,14 @@ class VideoDownloader:
             logger.warning("다운로드할 영상이 없습니다.")
             return {"total": 0, "downloaded": 0, "skipped": 0, "failed": 0}
         
+        logger.info(f"YouTube 기본 순서(최신순)로 영상을 처리합니다.")
+        
         # 다운로드 수 제한 적용
         if settings.max_downloads_per_run > 0:
             original_count = len(videos)
             videos = videos[:settings.max_downloads_per_run]
             if original_count > len(videos):
-                logger.info(f"다운로드 수 제한: {original_count}개 중 {len(videos)}개만 다운로드")
+                logger.info(f"다운로드 수 제한: {original_count}개 중 {len(videos)}개만 다운로드 (최신 순)")
         
         logger.info(f"새로 다운로드할 영상: {len(videos)}개 (총 {len(videos)}개 중)")
         
