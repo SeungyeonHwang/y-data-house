@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DeepSeek RAG 시스템 - 98개 영상 자막을 자연어로 검색하고 AI가 답변
-개떡같이 말해도 찰떡같이 알아듣는 시스템 v3.0 - 개선된 정밀도
+개떡같이 말해도 찰떡같이 알아듣는 시스템 v4.0 - HyDE + Query Rewriting
 """
 
 import os
@@ -68,6 +68,70 @@ class SmartRAG:
         except Exception as e:
             raise ValueError(f"❌ ChromaDB 로드 실패: {e}\n'make embed'를 먼저 실행하세요.")
 
+    def generate_hyde_documents(self, query: str, n_docs=2):
+        """HyDE: 2개 가상 문서 생성 후 TOP-k 교차 선택"""
+        hyde_docs = []
+        
+        for i in range(n_docs):
+            try:
+                response = self.client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": "당신은 일본 부동산 투자 전문가입니다. 사용자 질문에 대한 완벽한 답변을 담은 150토큰 내외의 가상 문서를 작성하세요."},
+                        {"role": "user", "content": f"다음 질문에 대한 완벽한 답변이 담긴 문서를 작성해주세요: '{query}'\n\n답변에는 구체적인 수치, 지역명, 투자 전략이 포함되어야 합니다. 변형 {i+1}번째 관점으로 작성하세요."}
+                    ],
+                    max_tokens=150,  # 토큰 길이 제한
+                    temperature=0.7 + (i * 0.2)  # 다양성을 위한 온도 조절
+                )
+                
+                hyde_doc = response.choices[0].message.content.strip()
+                hyde_docs.append(hyde_doc)
+                print(f"🎯 HyDE 문서 {i+1} 생성: {hyde_doc[:60]}...")
+                
+            except Exception as e:
+                print(f"⚠️ HyDE 문서 {i+1} 생성 실패: {e}")
+                continue
+        
+        return hyde_docs if hyde_docs else [None]
+
+    def rewrite_query(self, query: str, context_sample: str = ""):
+        """Query Rewriting: 검색 최적화된 질문으로 재작성 (60토큰 제한)"""
+        try:
+            prompt = f"""당신은 검색 전문가입니다. 사용자의 질문을 검색 엔진이 이해하기 쉬운 형태로 재작성하세요.
+
+## 원본 질문
+{query}
+
+## 컨텍스트 샘플
+{context_sample[:200]}
+
+### 지시사항
+원본 질문을 다음 중 하나로 변환하세요:
+1. 핵심 키워드 + 필터가 포함된 검색 쿼리
+2. 구체적인 조건과 용어가 명확한 질문
+
+예시: "좋은 지역?" → "도쿄 사이타마 수익률 높은 부동산 투자 지역 추천"
+**60토큰 이내로 간결하게 작성하세요.**
+"""
+            
+            response = self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "당신은 검색 질의 최적화 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=60,  # 토큰 길이 제한 강화
+                temperature=0.5
+            )
+            
+            rewritten = response.choices[0].message.content.strip()
+            print(f"🔄 Query Rewriting: {rewritten}")
+            return rewritten
+            
+        except Exception as e:
+            print(f"⚠️ Query Rewriting 실패: {e}")
+            return query  # fallback to original
+
     def expand_keywords_with_llm(self, query: str):
         """LLM으로 키워드 동적 확장"""
         try:
@@ -105,36 +169,60 @@ class SmartRAG:
         
         return keywords[:3]
 
-    def multi_search(self, query: str):
-        """다중 검색 전략으로 관련 영상 찾기 (최대 5개로 제한)"""
+    def multi_search_v3(self, query: str):
+        """HyDE + Query Rewriting + 다중 검색 전략 (v3.0 - Precision 보정)"""
         all_results = []
         
         # 1차: 원본 질문
         print(f"🔍 1차 검색: '{query}'")
-        results1 = self._single_search(query, n_results=3)
+        results1 = self._single_search(query, n_results=2)
         if results1:
             all_results.extend(self._format_results(results1, "원본질문"))
         
-        # 2차: LLM 기반 키워드 확장 검색
+        # 2차: HyDE (2개 문서 생성 후 TOP-k 교차 선택)
+        hyde_docs = self.generate_hyde_documents(query, n_docs=2)
+        for i, hyde_doc in enumerate(hyde_docs):
+            if hyde_doc:
+                print(f"🔍 HyDE-{i+1} 검색")
+                hyde_results = self._single_search(hyde_doc, n_results=1)  # 각각 1개씩만
+                if hyde_results:
+                    all_results.extend(self._format_results(hyde_results, f"HyDE-{i+1}"))
+        
+        # 3차: Query Rewriting (질문 재작성 후 검색)
+        context_sample = all_results[0]['content'] if all_results else ""
+        rewritten_query = self.rewrite_query(query, context_sample)
+        if rewritten_query != query:
+            print(f"🔍 Rewritten 검색")
+            rewritten_results = self._single_search(rewritten_query, n_results=2)
+            if rewritten_results:
+                all_results.extend(self._format_results(rewritten_results, "Rewritten"))
+        
+        # 4차: LLM 기반 키워드 확장 검색 (상위 1개만)
         expanded_keywords = self.expand_keywords_with_llm(query)
-        for keyword in expanded_keywords[:3]:  # 상위 3개만
+        for keyword in expanded_keywords[:1]:  # 상위 1개만으로 축소
             print(f"🔍 확장 키워드: '{keyword}'")
-            results = self._single_search(keyword, n_results=2)
+            results = self._single_search(keyword, n_results=1)
             if results:
                 all_results.extend(self._format_results(results, f"LLM키워드:{keyword}"))
         
-        # 3차: 필수 투자 용어 검색 (더 엄선)
-        investment_terms = ["투자", "수익률", "재개발"]
-        for term in investment_terms:
-            combined_query = f"{query} {term}"
-            print(f"🔍 확장 검색: '{combined_query}'")
-            results = self._single_search(combined_query, n_results=1)
-            if results:
-                all_results.extend(self._format_results(results, f"확장:{term}"))
-        
-        # 중복 제거 및 점수순 정렬 - 최대 5개로 제한
+        # 중복 제거 및 점수순 정렬
         unique_results = self._deduplicate_results(all_results)
-        return unique_results[:5]  # 8개 → 5개로 축소
+        
+        # Precision 보정: 유사도 컷오프 + 메타데이터 필터
+        filtered_results = [
+            r for r in unique_results 
+            if r['similarity'] > 0.30  # 0.15 → 0.30으로 상향
+            and ("부동산" in r['title'] or "투자" in r['title'] or "도쿄" in r['title'])  # 메타 키워드 필터
+        ]
+        
+        # 필터링 결과가 너무 적으면 유사도만으로 fallback
+        if len(filtered_results) < 2:
+            print("⚠️ 메타 필터 결과 부족, 유사도만으로 fallback")
+            filtered_results = [r for r in unique_results if r['similarity'] > 0.25]
+        
+        print(f"📊 필터링: {len(unique_results)} → {len(filtered_results)} (유사도≥0.30 + 메타필터)")
+        
+        return filtered_results[:5]  # 최대 5개 고품질 결과
 
     def _single_search(self, query: str, n_results: int = 5):
         """단일 검색 실행"""
@@ -220,29 +308,29 @@ class SmartRAG:
             return f"❌ DeepSeek API 오류: {e}"
 
     def chat(self, query: str):
-        """스마트 RAG 파이프라인 실행 (개선된 정밀도)"""
-        print(f"🧠 스마트 검색 시작 (정밀도 모드): '{query}'")
+        """스마트 RAG 파이프라인 실행 (HyDE + Rewriting v3.0 - Precision 보정)"""
+        print(f"🚀 HyDE + Rewriting RAG v3.0 시작: '{query}'")
         
-        # 다중 검색 전략 실행
-        search_results = self.multi_search(query)
+        # HyDE + Query Rewriting + 다중 검색 전략 실행 (Precision 보정)
+        search_results = self.multi_search_v3(query)
         
         if not search_results:
             print("❌ 모든 검색 전략 실패")
             return "❌ 관련 영상을 찾을 수 없습니다."
         
-        print(f"✅ {len(search_results)}개 고품질 영상 발견 (다중 검색)")
+        print(f"✅ {len(search_results)}개 고품질 영상 발견 (Precision 보정 적용)")
         
-        # 발견된 영상들 미리보기
+        # 발견된 영상들 미리보기 (유사도 상세 표시)
         for i, result in enumerate(search_results):
             duration = result.get('duration', 'N/A')
-            print(f"   {i+1}. [{result['similarity']:.2f}] {result['title'][:45]}... ({duration}, {result['search_type']})")
+            print(f"   {i+1}. [{result['similarity']:.3f}] {result['title'][:40]}... ({duration}, {result['search_type']})")
         
         # AI 답변 생성
-        print("🤖 DeepSeek 집중 분석 중...")
+        print("🤖 DeepSeek 최종 답변 생성 중...")
         answer = self.generate_answer(query, search_results)
         
         # 참고 영상 목록 (더 상세한 정보)
-        references = "\n\n📚 **참고 영상:**\n"
+        references = "\n\n📚 **참고 영상 (Precision 보정 적용):**\n"
         for i, result in enumerate(search_results):
             duration = result.get('duration', 'N/A')
             references += f"{i+1}. {result['title']} ({result['metadata']['upload']}, {duration}) - 유사도 {result['similarity']:.1%} [{result['search_type']}]\n"
