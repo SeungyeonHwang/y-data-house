@@ -525,5 +525,113 @@ def fix_video_ids(vault_path: str) -> None:
     logger.info(f"Video ID 수정 완료: {fixed_count}개 파일")
 
 
+@main.command()
+def config_validate():
+    """Vault 데이터 정합성을 검증합니다."""
+    from pathlib import Path
+    import yaml
+    import re
+    
+    click.echo("🔍 데이터 정합성 검사 시작...")
+    
+    # 통계
+    total_videos = 0
+    valid_videos = 0
+    invalid_videos = 0
+    missing_files = 0
+    yaml_errors = 0
+    
+    vault_videos_path = settings.vault_root / "10_videos"
+    
+    if not vault_videos_path.exists():
+        click.echo("❌ vault/10_videos 폴더가 존재하지 않습니다.")
+        return
+    
+    click.echo(f"📁 검사 경로: {vault_videos_path}")
+    
+    # 모든 captions.md 파일 찾기
+    caption_files = list(vault_videos_path.rglob("captions.md"))
+    total_videos = len(caption_files)
+    
+    click.echo(f"📊 총 {total_videos}개 영상 발견")
+    
+    required_fields = ['title', 'upload', 'channel', 'video_id', 'topic', 'source_url']
+    
+    with click.progressbar(caption_files, label='검증 중') as bar:
+        for caption_file in bar:
+            try:
+                with open(caption_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # YAML frontmatter 파싱
+                if content.startswith('---'):
+                    parts = content.split('---', 2)
+                    if len(parts) >= 3:
+                        try:
+                            metadata = yaml.safe_load(parts[1])
+                            
+                            # 필수 필드 검사
+                            missing_fields = [field for field in required_fields if field not in metadata]
+                            if missing_fields:
+                                click.echo(f"⚠️  {caption_file.relative_to(vault_videos_path)}: 누락 필드 {missing_fields}")
+                                invalid_videos += 1
+                                continue
+                            
+                            # 날짜 형식 검사
+                            upload_date = metadata.get('upload')
+                            if upload_date and not re.match(r'\d{4}-\d{2}-\d{2}', str(upload_date)):
+                                click.echo(f"⚠️  {caption_file.relative_to(vault_videos_path)}: 잘못된 날짜 형식 {upload_date}")
+                                invalid_videos += 1
+                                continue
+                            
+                            # video_id 검사
+                            video_id = metadata.get('video_id')
+                            if video_id and not re.match(r'^[a-zA-Z0-9_-]{11}$', str(video_id)):
+                                click.echo(f"⚠️  {caption_file.relative_to(vault_videos_path)}: 잘못된 video_id {video_id}")
+                                invalid_videos += 1
+                                continue
+                            
+                            # 동반 파일 검사 (video.mp4)
+                            video_file = caption_file.parent / "video.mp4"
+                            if not video_file.exists():
+                                click.echo(f"📹 {caption_file.relative_to(vault_videos_path)}: video.mp4 누락")
+                                missing_files += 1
+                            
+                            valid_videos += 1
+                            
+                        except yaml.YAMLError as ye:
+                            click.echo(f"❌ {caption_file.relative_to(vault_videos_path)}: YAML 파싱 오류 - {ye}")
+                            yaml_errors += 1
+                    else:
+                        click.echo(f"❌ {caption_file.relative_to(vault_videos_path)}: YAML frontmatter 형식 오류")
+                        yaml_errors += 1
+                else:
+                    click.echo(f"❌ {caption_file.relative_to(vault_videos_path)}: YAML frontmatter 없음")
+                    yaml_errors += 1
+                    
+            except Exception as e:
+                click.echo(f"💥 {caption_file.relative_to(vault_videos_path)}: 파일 읽기 오류 - {e}")
+                invalid_videos += 1
+    
+    # 결과 요약
+    click.echo("\n" + "=" * 50)
+    click.echo("📋 검증 결과 요약")
+    click.echo("=" * 50)
+    click.echo(f"✅ 유효한 영상: {valid_videos}개")
+    click.echo(f"⚠️  오류 영상: {invalid_videos}개") 
+    click.echo(f"🎬 비디오 파일 누락: {missing_files}개")
+    click.echo(f"📝 YAML 오류: {yaml_errors}개")
+    
+    success_rate = (valid_videos / total_videos * 100) if total_videos > 0 else 0
+    click.echo(f"📊 성공률: {success_rate:.1f}%")
+    
+    if success_rate >= 95:
+        click.echo("🎉 데이터 정합성 검사 통과!")
+    elif success_rate >= 80:
+        click.echo("⚠️  일부 문제가 있지만 대체로 양호합니다.")
+    else:
+        click.echo("❌ 심각한 데이터 정합성 문제가 발견되었습니다.")
+
+
 if __name__ == '__main__':
     main() 

@@ -92,6 +92,21 @@ vault:
 	@mkdir -p vault/10_videos
 	@echo "✅ Vault 디렉토리 생성 완료"
 
+# Data integrity check
+.PHONY: check
+check: $(VENV_NAME)
+	@echo "🔍 데이터 정합성 검사 실행 중..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		echo ""; \
+		echo "다음 명령을 실행하세요:"; \
+		echo "  source venv/bin/activate"; \
+		echo "  make install"; \
+		echo ""; \
+		exit 1; \
+	fi
+	$(YDH) config-validate
+
 # Clean up
 .PHONY: clean
 clean:
@@ -109,6 +124,7 @@ help:
 	@echo "  make init       - 기본 환경 설정 (가상환경 생성, 초기 파일 생성)"
 	@echo "  make install    - 의존성 설치 (가상환경 활성화 후 실행)"
 	@echo "  make download   - channels.txt의 모든 채널에서 새 영상 다운로드"
+	@echo "  make check      - Vault 데이터 정합성 검사"
 	@echo "  make clean      - 가상환경 삭제"
 	@echo ""
 	@echo "💡 사용법:"
@@ -117,3 +133,4 @@ help:
 	@echo "  3. make install                 # 의존성 설치"
 	@echo "  4. channels.txt 편집             # 다운로드할 채널 URL 추가"
 	@echo "  5. make download                # 영상 다운로드"
+	@echo "  6. make check                   # 데이터 정합성 검사"
