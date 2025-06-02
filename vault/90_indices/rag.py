@@ -68,8 +68,8 @@ class SmartRAG:
         except Exception as e:
             raise ValueError(f"❌ ChromaDB 로드 실패: {e}\n'make embed'를 먼저 실행하세요.")
 
-    def generate_hyde_documents(self, query: str, n_docs=2):
-        """HyDE: 2개 가상 문서 생성 후 TOP-k 교차 선택"""
+    def generate_hyde_documents(self, query: str, n_docs=1):
+        """HyDE: 1개 가상 문서 생성 (벡터 분산 방지)"""
         hyde_docs = []
         
         for i in range(n_docs):
@@ -179,48 +179,49 @@ class SmartRAG:
         if results1:
             all_results.extend(self._format_results(results1, "원본질문"))
         
-        # 2차: HyDE (2개 문서 생성 후 TOP-k 교차 선택)
-        hyde_docs = self.generate_hyde_documents(query, n_docs=2)
+        # 2차: HyDE (1개 문서 생성으로 노이즈 감소)
+        hyde_docs = self.generate_hyde_documents(query, n_docs=1)
         for i, hyde_doc in enumerate(hyde_docs):
             if hyde_doc:
-                print(f"🔍 HyDE-{i+1} 검색")
-                hyde_results = self._single_search(hyde_doc, n_results=1)  # 각각 1개씩만
+                print(f"🔍 HyDE 검색")
+                hyde_results = self._single_search(hyde_doc, n_results=2)  # 1개 문서지만 2개 결과
                 if hyde_results:
-                    all_results.extend(self._format_results(hyde_results, f"HyDE-{i+1}"))
+                    all_results.extend(self._format_results(hyde_results, "HyDE"))
         
         # 3차: Query Rewriting (질문 재작성 후 검색)
         context_sample = all_results[0]['content'] if all_results else ""
         rewritten_query = self.rewrite_query(query, context_sample)
         if rewritten_query != query:
             print(f"🔍 Rewritten 검색")
-            rewritten_results = self._single_search(rewritten_query, n_results=2)
+            rewritten_results = self._single_search(rewritten_query, n_results=3)  # 2→3으로 증가
             if rewritten_results:
                 all_results.extend(self._format_results(rewritten_results, "Rewritten"))
         
-        # 4차: LLM 기반 키워드 확장 검색 (상위 1개만)
-        expanded_keywords = self.expand_keywords_with_llm(query)
-        for keyword in expanded_keywords[:1]:  # 상위 1개만으로 축소
-            print(f"🔍 확장 키워드: '{keyword}'")
-            results = self._single_search(keyword, n_results=1)
-            if results:
-                all_results.extend(self._format_results(results, f"LLM키워드:{keyword}"))
+        # 4차: LLM 기반 키워드 확장 검색 (생략 - 노이즈 감소)
+        # expanded_keywords = self.expand_keywords_with_llm(query)
+        # for keyword in expanded_keywords[:0]:  # 생략
+        #     print(f"🔍 확장 키워드: '{keyword}'")
+        #     results = self._single_search(keyword, n_results=1)
+        #     if results:
+        #         all_results.extend(self._format_results(results, f"LLM키워드:{keyword}"))
+        print("🔍 LLM 키워드 검색 생략 (노이즈 감소)")
         
         # 중복 제거 및 점수순 정렬
         unique_results = self._deduplicate_results(all_results)
         
-        # Precision 보정: 유사도 컷오프 + 메타데이터 필터
-        filtered_results = [
-            r for r in unique_results 
-            if r['similarity'] > 0.30  # 0.15 → 0.30으로 상향
-            and ("부동산" in r['title'] or "투자" in r['title'] or "도쿄" in r['title'])  # 메타 키워드 필터
-        ]
+        # LLM Re-Ranker: 창의적 관련성 판단으로 하드코딩 필터 대체
+        if len(unique_results) > 5:
+            # 상위 8개만 LLM에게 보내서 평가 (비용 최적화)
+            candidates = unique_results[:8]
+            filtered_results = self._llm_rerank_filter(query, candidates)
+        else:
+            # 결과가 적으면 LLM 평가 후 유사도만으로 fallback
+            filtered_results = self._llm_rerank_filter(query, unique_results)
+            if len(filtered_results) < 2:
+                print("⚠️ LLM 필터 결과 부족, 유사도만으로 fallback")
+                filtered_results = [r for r in unique_results if r['similarity'] > 0.25]
         
-        # 필터링 결과가 너무 적으면 유사도만으로 fallback
-        if len(filtered_results) < 2:
-            print("⚠️ 메타 필터 결과 부족, 유사도만으로 fallback")
-            filtered_results = [r for r in unique_results if r['similarity'] > 0.25]
-        
-        print(f"📊 필터링: {len(unique_results)} → {len(filtered_results)} (유사도≥0.30 + 메타필터)")
+        print(f"📊 LLM Re-Ranking: {len(unique_results)} → {len(filtered_results)} (창의적 관련성 판단)")
         
         return filtered_results[:5]  # 최대 5개 고품질 결과
 
@@ -271,6 +272,79 @@ class SmartRAG:
         # 유사도 순으로 정렬
         return sorted(seen_videos.values(), key=lambda x: x['similarity'], reverse=True)
 
+    def _llm_rerank_filter(self, query: str, candidates: list):
+        """LLM Re-Ranker: 창의적 관련성 판단으로 영상 필터링"""
+        if not candidates:
+            return []
+        
+        try:
+            # 후보 영상들을 LLM에게 평가 요청
+            candidate_info = []
+            for i, result in enumerate(candidates):
+                candidate_info.append(
+                    f"영상 {i+1}: {result['title']}\n"
+                    f"내용: {result['content'][:200]}...\n"
+                    f"유사도: {result['similarity']:.3f}"
+                )
+            
+            candidates_text = "\n---\n".join(candidate_info)
+            
+            prompt = f"""당신은 일본 부동산 투자 전문가입니다. 아래 영상들이 사용자 질문과 얼마나 관련이 있는지 창의적으로 판단해주세요.
+
+## 사용자 질문
+{query}
+
+## 후보 영상들
+{candidates_text}
+
+## 평가 기준
+- 직접적 관련성: 질문과 정확히 일치하는 내용 (높은 점수)
+- 간접적 관련성: 비슷한 투자 패턴이나 원칙 적용 가능 (중간 점수)
+- 창의적 연결: 다른 지역/상황이지만 인사이트 추출 가능 (낮은 점수)
+- 무관: 부동산 투자와 관련 없음 (제외)
+
+각 영상에 대해 1-10점으로 평가하고, 7점 이상만 선택하세요.
+응답 형식: "영상번호:점수" (예: 1:9, 3:8, 5:7)"""
+
+            response = self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "당신은 관련성 평가 전문가입니다. 창의적이지만 정확한 판단을 내리세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=200,
+                temperature=0.3  # 일관성을 위해 낮은 온도
+            )
+            
+            # LLM 응답 파싱
+            llm_response = response.choices[0].message.content.strip()
+            print(f"🤖 LLM 관련성 평가: {llm_response}")
+            
+            # 점수 파싱 및 필터링
+            selected_indices = []
+            for line in llm_response.split(','):
+                line = line.strip()
+                if ':' in line:
+                    try:
+                        idx_str, score_str = line.split(':')
+                        idx = int(idx_str.strip()) - 1  # 1-based to 0-based
+                        score = int(score_str.strip())
+                        if score >= 7 and 0 <= idx < len(candidates):
+                            selected_indices.append(idx)
+                    except ValueError:
+                        continue
+            
+            # 선택된 영상들 반환 (LLM 점수 순서 유지)
+            filtered = [candidates[i] for i in selected_indices]
+            
+            print(f"🎯 LLM 선택: {len(selected_indices)}개 영상 (7점 이상)")
+            return filtered
+            
+        except Exception as e:
+            print(f"⚠️ LLM Re-Ranker 실패: {e}, 유사도로 fallback")
+            # LLM 실패시 유사도만으로 필터링
+            return [r for r in candidates if r['similarity'] > 0.30]
+
     def generate_answer(self, query: str, search_results: list):
         """개선된 답변 생성 - 5개 영상으로 집중된 분석"""
         if not search_results:
@@ -308,17 +382,17 @@ class SmartRAG:
             return f"❌ DeepSeek API 오류: {e}"
 
     def chat(self, query: str):
-        """스마트 RAG 파이프라인 실행 (HyDE + Rewriting v3.0 - Precision 보정)"""
-        print(f"🚀 HyDE + Rewriting RAG v3.0 시작: '{query}'")
+        """스마트 RAG 파이프라인 실행 (v4.0 - LLM Re-Ranker 창의적 필터링)"""
+        print(f"🚀 HyDE + Rewriting RAG v4.0 시작: '{query}' (LLM 창의적 필터링)")
         
-        # HyDE + Query Rewriting + 다중 검색 전략 실행 (Precision 보정)
+        # HyDE + Query Rewriting + LLM Re-Ranker 파이프라인 실행
         search_results = self.multi_search_v3(query)
         
         if not search_results:
             print("❌ 모든 검색 전략 실패")
             return "❌ 관련 영상을 찾을 수 없습니다."
         
-        print(f"✅ {len(search_results)}개 고품질 영상 발견 (Precision 보정 적용)")
+        print(f"✅ {len(search_results)}개 고품질 영상 발견 (LLM 창의적 관련성 판단)")
         
         # 발견된 영상들 미리보기 (유사도 상세 표시)
         for i, result in enumerate(search_results):
@@ -330,7 +404,7 @@ class SmartRAG:
         answer = self.generate_answer(query, search_results)
         
         # 참고 영상 목록 (더 상세한 정보)
-        references = "\n\n📚 **참고 영상 (Precision 보정 적용):**\n"
+        references = "\n\n📚 **참고 영상 (v4.0 - LLM Re-Ranker):**\n"
         for i, result in enumerate(search_results):
             duration = result.get('duration', 'N/A')
             references += f"{i+1}. {result['title']} ({result['metadata']['upload']}, {duration}) - 유사도 {result['similarity']:.1%} [{result['search_type']}]\n"
