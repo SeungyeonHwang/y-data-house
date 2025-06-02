@@ -31,7 +31,9 @@ venv.bak/
 
 # Y-Data-House Specific
 result/
-vault/
+vault/10_videos/
+vault/90_indices/chroma/
+vault/.obsidian/
 *.log
 ydh.log*
 download_progress.json

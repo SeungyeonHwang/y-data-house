@@ -31,6 +31,9 @@ dependencies = [
     "prefect>=2.0.0",
     "tqdm>=4.64.0",
     "pathlib-mate>=1.0.0",
+    "chromadb>=0.4.0",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
