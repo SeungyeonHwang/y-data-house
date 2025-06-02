@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 DeepSeek RAG 시스템 - 98개 영상 자막을 자연어로 검색하고 AI가 답변
-개떡같이 말해도 찰떡같이 알아듣는 시스템 v4.0 - HyDE + Query Rewriting
+개떡같이 말해도 찰떡같이 알아듣는 시스템 v4.0 - HyDE + Query Rewriting + LLM Re-Ranker
+하드코딩 필터 완전 제거, LLM이 창의적으로 관련성 판단
 """
 
 import os
@@ -132,42 +133,7 @@ class SmartRAG:
             print(f"⚠️ Query Rewriting 실패: {e}")
             return query  # fallback to original
 
-    def expand_keywords_with_llm(self, query: str):
-        """LLM으로 키워드 동적 확장"""
-        try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": "당신은 일본 부동산 투자 전문가입니다. 사용자 질문에서 핵심 키워드 3-5개를 추출하여 검색에 활용할 수 있게 도와주세요."},
-                    {"role": "user", "content": f"다음 질문에서 일본 부동산 투자 관련 핵심 키워드를 3-5개 추출해주세요: '{query}'\n\n답변 형식: 키워드1, 키워드2, 키워드3"}
-                ],
-                max_tokens=100,
-                temperature=0.3
-            )
-            
-            keywords_text = response.choices[0].message.content.strip()
-            keywords = [k.strip() for k in keywords_text.split(',')]
-            print(f"🧠 LLM 키워드 확장: {keywords}")
-            return keywords[:5]  # 최대 5개
-            
-        except Exception as e:
-            print(f"⚠️ LLM 키워드 확장 실패: {e}")
-            # fallback to manual extraction
-            return self._manual_extract_keywords(query)
 
-    def _manual_extract_keywords(self, query: str):
-        """수동 키워드 추출 (LLM 실패시 fallback)"""
-        keywords = []
-        if "후쿠오카" in query:
-            keywords.extend(["지방", "큐슈", "도시", "투자"])
-        if "투자" in query:
-            keywords.extend(["수익률", "재개발", "부동산"])
-        if "지역" in query:
-            keywords.extend(["도쿄", "사이타마", "위치"])
-        if "원룸" in query:
-            keywords.extend(["원룸", "임대", "단신"])
-        
-        return keywords[:3]
 
     def multi_search_v3(self, query: str):
         """HyDE + Query Rewriting + 다중 검색 전략 (v3.0 - Precision 보정)"""
@@ -197,14 +163,7 @@ class SmartRAG:
             if rewritten_results:
                 all_results.extend(self._format_results(rewritten_results, "Rewritten"))
         
-        # 4차: LLM 기반 키워드 확장 검색 (생략 - 노이즈 감소)
-        # expanded_keywords = self.expand_keywords_with_llm(query)
-        # for keyword in expanded_keywords[:0]:  # 생략
-        #     print(f"🔍 확장 키워드: '{keyword}'")
-        #     results = self._single_search(keyword, n_results=1)
-        #     if results:
-        #         all_results.extend(self._format_results(results, f"LLM키워드:{keyword}"))
-        print("🔍 LLM 키워드 검색 생략 (노이즈 감소)")
+        # 4차: LLM 키워드 확장 검색 제거 (LLM Re-Ranker로 대체)
         
         # 중복 제거 및 점수순 정렬
         unique_results = self._deduplicate_results(all_results)
@@ -218,8 +177,8 @@ class SmartRAG:
             # 결과가 적으면 LLM 평가 후 유사도만으로 fallback
             filtered_results = self._llm_rerank_filter(query, unique_results)
             if len(filtered_results) < 2:
-                print("⚠️ LLM 필터 결과 부족, 유사도만으로 fallback")
-                filtered_results = [r for r in unique_results if r['similarity'] > 0.25]
+                print("⚠️ LLM 필터 결과 부족, 유사도 0.25+ fallback")
+                filtered_results = [r for r in unique_results if r['similarity'] > 0.25]  # 0.35 → 0.25 복원
         
         print(f"📊 LLM Re-Ranking: {len(unique_results)} → {len(filtered_results)} (창의적 관련성 판단)")
         
@@ -298,12 +257,13 @@ class SmartRAG:
 {candidates_text}
 
 ## 평가 기준
-- 직접적 관련성: 질문과 정확히 일치하는 내용 (높은 점수)
-- 간접적 관련성: 비슷한 투자 패턴이나 원칙 적용 가능 (중간 점수)
-- 창의적 연결: 다른 지역/상황이지만 인사이트 추출 가능 (낮은 점수)
-- 무관: 부동산 투자와 관련 없음 (제외)
+- 직접적 관련성: 질문과 정확히 일치하는 내용 (9-10점)
+- 간접적 관련성: 비슷한 투자 패턴이나 원칙 적용 가능 (7-8점)
+- 창의적 연결: 다른 지역/상황이지만 인사이트 추출 가능 (6-7점)
+- 약간 관련: 부동산 투자와 관련은 있지만 도움 제한적 (4-5점)
+- 무관: 부동산 투자와 관련 없음 (1-3점)
 
-각 영상에 대해 1-10점으로 평가하고, 7점 이상만 선택하세요.
+각 영상에 대해 1-10점으로 평가하고, 6점 이상만 선택하세요.
 응답 형식: "영상번호:점수" (예: 1:9, 3:8, 5:7)"""
 
             response = self.client.chat.completions.create(
@@ -320,30 +280,36 @@ class SmartRAG:
             llm_response = response.choices[0].message.content.strip()
             print(f"🤖 LLM 관련성 평가: {llm_response}")
             
-            # 점수 파싱 및 필터링
+            # 점수 파싱 및 필터링 (개선된 파싱)
             selected_indices = []
-            for line in llm_response.split(','):
-                line = line.strip()
-                if ':' in line:
-                    try:
-                        idx_str, score_str = line.split(':')
-                        idx = int(idx_str.strip()) - 1  # 1-based to 0-based
-                        score = int(score_str.strip())
-                        if score >= 7 and 0 <= idx < len(candidates):
-                            selected_indices.append(idx)
-                    except ValueError:
-                        continue
+            import re
+            
+            # 정규식으로 "숫자:점수" 패턴 추출 (괄호 설명 무시)
+            pattern = r'(\d+):(\d+)'
+            matches = re.findall(pattern, llm_response)
+            
+            for idx_str, score_str in matches:
+                try:
+                    idx = int(idx_str) - 1  # 1-based to 0-based
+                    score = int(score_str)
+                    if score >= 6 and 0 <= idx < len(candidates):
+                        selected_indices.append(idx)
+                        print(f"   ✅ 영상 {idx+1}: {score}점 선택")
+                    else:
+                        print(f"   ❌ 영상 {idx+1}: {score}점 제외 (6점 미만)")
+                except ValueError:
+                    continue
             
             # 선택된 영상들 반환 (LLM 점수 순서 유지)
             filtered = [candidates[i] for i in selected_indices]
             
-            print(f"🎯 LLM 선택: {len(selected_indices)}개 영상 (7점 이상)")
+            print(f"🎯 LLM 선택: {len(selected_indices)}개 영상 (6점 이상)")
             return filtered
             
         except Exception as e:
-            print(f"⚠️ LLM Re-Ranker 실패: {e}, 유사도로 fallback")
-            # LLM 실패시 유사도만으로 필터링
-            return [r for r in candidates if r['similarity'] > 0.30]
+            print(f"⚠️ LLM Re-Ranker 실패: {e}, 유사도 0.25+ fallback")
+            # LLM 실패시 유사도만으로 필터링 (0.35 → 0.25 복원)
+            return [r for r in candidates if r['similarity'] > 0.25]
 
     def generate_answer(self, query: str, search_results: list):
         """개선된 답변 생성 - 5개 영상으로 집중된 분석"""
@@ -382,8 +348,11 @@ class SmartRAG:
             return f"❌ DeepSeek API 오류: {e}"
 
     def chat(self, query: str):
-        """스마트 RAG 파이프라인 실행 (v4.0 - LLM Re-Ranker 창의적 필터링)"""
-        print(f"🚀 HyDE + Rewriting RAG v4.0 시작: '{query}' (LLM 창의적 필터링)")
+        """스마트 RAG 파이프라인 실행 (v4.1 - 세컨드오피니언 반영)"""
+        import time
+        start_time = time.time()
+        
+        print(f"🚀 HyDE + Rewriting RAG v4.1 시작: '{query}' (세컨드오피니언 반영)")
         
         # HyDE + Query Rewriting + LLM Re-Ranker 파이프라인 실행
         search_results = self.multi_search_v3(query)
@@ -403,8 +372,13 @@ class SmartRAG:
         print("🤖 DeepSeek 최종 답변 생성 중...")
         answer = self.generate_answer(query, search_results)
         
+        # 성능 및 비용 모니터링 로깅
+        elapsed_time = time.time() - start_time
+        estimated_tokens = len(query) + sum(len(r['content'][:800]) for r in search_results) + len(answer)
+        print(f"📊 성능 로그: {elapsed_time:.1f}초, 추정토큰: {estimated_tokens:,}, 영상수: {len(search_results)}")
+        
         # 참고 영상 목록 (더 상세한 정보)
-        references = "\n\n📚 **참고 영상 (v4.0 - LLM Re-Ranker):**\n"
+        references = "\n\n📚 **참고 영상 (v4.1 - 세컨드오피니언 반영):**\n"
         for i, result in enumerate(search_results):
             duration = result.get('duration', 'N/A')
             references += f"{i+1}. {result['title']} ({result['metadata']['upload']}, {duration}) - 유사도 {result['similarity']:.1%} [{result['search_type']}]\n"
