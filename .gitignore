@@ -122,3 +122,8 @@ dmypy.json
 *.tar.gz
 *.rar
 *.7z
+# Node/Tauri
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+target/
