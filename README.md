@@ -18,6 +18,31 @@ Y-Data-House는 YouTube 채널의 영상을 자동으로 다운로드하고, 자
 
 ## 🚀 빠른 시작
 
+### 개발 환경 설치
+
+Y-Data-House는 Python 기반 CLI와 Tauri(Rust + React) 데스크톱 앱으로 구성되어 있습니다.
+다음 도구가 필요합니다.
+
+1. **Python 3.10+** – Ubuntu는 `sudo apt install python3 python3-venv` 로 설치하거나 [pyenv](https://github.com/pyenv/pyenv)를 사용할 수 있습니다.
+2. **Rust toolchain** – `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+3. **Node.js 18+** 와 **pnpm** – `nvm install 18` 후 `npm install -g pnpm`
+
+설치 후 아래 명령으로 가상환경과 의존성을 준비합니다.
+
+```bash
+make init                 # venv 및 기본 폴더 생성
+source venv/bin/activate
+make install              # Python 패키지 설치
+```
+
+데스크톱 앱 실행은 `app/` 폴더에서 다음과 같이 진행합니다.
+
+```bash
+cd app
+pnpm install
+pnpm tauri
+```
+
 ### 설치 및 초기 설정
 
 ```bash
@@ -238,6 +263,26 @@ prefect deployment apply daily_maintenance_flow-deployment.yaml
 ### 브라우저 쿠키 활용
 
 YouTube 로그인 상태의 브라우저 쿠키를 사용하여 접근 제한된 영상도 처리 가능합니다.
+
+## 🖥️ 데스크톱 앱 (Tauri)
+
+`app/` 폴더에는 로컬에서 영상을 탐색하고 `rag.py`를 호출할 수 있는 Tauri + React 데스크톱 앱이 포함되어 있습니다.
+
+### 준비물
+
+- Rust toolchain
+- Node.js 18 이상과 pnpm
+- `vault/10_videos` 폴더의 영상과 `captions.md`
+
+### 실행 방법
+
+```bash
+cd app
+pnpm install          # 최초 1회 의존성 설치
+pnpm tauri            # 개발 모드 실행
+```
+
+프로덕션 빌드를 생성하려면 `pnpm run build` 명령을 사용합니다.
 
 ## 🎯 향후 계획
 
