@@ -5,19 +5,22 @@
   "scripts": {
     "dev": "vite",
     "build:frontend": "vite build",
-    "tauri": "tauri dev",
-    "build": "pnpm run build:frontend && tauri build"
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev -- --manifest-path src-tauri/Cargo.toml --config src-tauri/tauri.conf.json",
+    "build": "pnpm run build:frontend && tauri build -- --manifest-path src-tauri/Cargo.toml --config src-tauri/tauri.conf.json"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.5.0",
     "@vitejs/plugin-react": "^4.0.0",
     "typescript": "^5.4.0",
-    "vite": "^5.0.0"
+    "vite": "^5.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0"
   },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "fuse.js": "^6.6.2",
-    "mini-lunr": "^1.0.0"
+    "@tauri-apps/api": "^2.5.0"
   }
 }

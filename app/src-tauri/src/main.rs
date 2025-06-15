@@ -1,9 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{command, Builder};
+use tauri::command;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+
+#[derive(serde::Serialize)]
+struct VideoInfo {
+    video_path: String,
+    captions_path: String,
+}
 
 #[command]
 fn list_videos() -> Result<Vec<VideoInfo>, String> {
@@ -38,16 +44,10 @@ fn collect_videos(dir: &PathBuf, videos: &mut Vec<VideoInfo>) -> Result<(), Stri
     Ok(())
 }
 
-#[derive(serde::Serialize)]
-struct VideoInfo {
-    video_path: String,
-    captions_path: String,
-}
-
 #[command]
 fn ask_rag(query: String) -> Result<String, String> {
     let output = Command::new("python")
-        .arg("vault/90_indices/rag.py")
+        .arg("../vault/90_indices/rag.py")
         .arg(query)
         .output()
         .map_err(|e| e.to_string())?;
@@ -59,7 +59,7 @@ fn ask_rag(query: String) -> Result<String, String> {
 }
 
 fn main() {
-    Builder::default()
+    tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![list_videos, ask_rag])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

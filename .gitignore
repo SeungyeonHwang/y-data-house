@@ -1,4 +1,10 @@
+# =============================================================================
+# Y-Data-House Project .gitignore
+# YouTube 다운로더 + 트랜스크립트 처리 + 데스크톱 앱 프로젝트
+# =============================================================================
+
 # Python
+# -----------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -28,32 +34,92 @@ ENV/
 env.bak/
 venv.bak/
 .venv/
+.conda/
 
-# Y-Data-House Specific
-result/
-vault/10_videos/
+# Node.js & npm/pnpm/yarn
+# -----------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+lerna-debug.log*
+.npm
+.eslintcache
+.yarn-integrity
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# Rust & Cargo
+# -----------------------------------------------------------------------------
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Tauri Desktop App
+# -----------------------------------------------------------------------------
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/Cargo.lock
+app/bundle/
+app/WixTools/
+
+# Build outputs
+app/dist-electron/
+app/release/
+
+# Y-Data-House Core Data
+# -----------------------------------------------------------------------------
+# 실제 다운로드된 비디오 파일들
+vault/10_videos/*/
+!vault/10_videos/.gitkeep
+
+# Vector DB 및 인덱스
 vault/90_indices/chroma/
+vault/90_indices/*.db
+vault/90_indices/*.sqlite
+
+# Obsidian 설정 (사용자별로 다름)
 vault/.obsidian/
+.obsidian/
+
+# 로그 파일들
 *.log
 ydh.log*
+logs/
+
+# 다운로드 진행상황 추적
 download_progress.json
 downloaded.txt
 downloads/
+result/
 
-# Environment Variables
+# 환경 설정 파일
+# -----------------------------------------------------------------------------
 .env
 .env.local
 .env.*.local
 .ydh.toml
+channels.txt
 
-# IDE
+# IDE & Editor
+# -----------------------------------------------------------------------------
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.sublime-project
+.sublime-workspace
 
 # OS
+# -----------------------------------------------------------------------------
 .DS_Store
 .DS_Store?
 ._*
@@ -61,22 +127,20 @@ downloads/
 .Trashes
 ehthumbs.db
 Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
 # Temporary files
+# -----------------------------------------------------------------------------
 *.tmp
 *.temp
 *.bak
 *.backup
 *.part
+*.crdownload
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Coverage reports
+# Test & Coverage
+# -----------------------------------------------------------------------------
 htmlcov/
 .tox/
 .coverage
@@ -87,22 +151,32 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.nyc_output
 
 # Jupyter Notebook
+# -----------------------------------------------------------------------------
 .ipynb_checkpoints
 
 # pyenv
+# -----------------------------------------------------------------------------
 .python-version
 
 # pipenv
+# -----------------------------------------------------------------------------
 Pipfile.lock
 
+# Poetry
+# -----------------------------------------------------------------------------
+poetry.lock
+
 # mypy
+# -----------------------------------------------------------------------------
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
-# Video files (if accidentally placed in repo)
+# Media Files (방지용 - 실수로 큰 파일 커밋 방지)
+# -----------------------------------------------------------------------------
 *.mp4
 *.avi
 *.mkv
@@ -110,20 +184,67 @@ dmypy.json
 *.wmv
 *.flv
 *.webm
+*.m4v
+*.3gp
+*.3g2
+*.mj2
 
-# Subtitle files (if accidentally placed in repo)
+# Subtitle files
 *.vtt
 *.srt
 *.ass
 *.ssa
+*.sbv
 
 # Archive files
+# -----------------------------------------------------------------------------
 *.zip
 *.tar.gz
+*.tar.bz2
 *.rar
 *.7z
-# Node/Tauri
-app/node_modules/
-app/dist/
-app/src-tauri/target/
-target/
+*.gz
+*.bz2
+
+# Database files
+# -----------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# AI/ML Model files (만약 나중에 추가될 경우)
+# -----------------------------------------------------------------------------
+*.pkl
+*.pickle
+*.model
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Documentation build
+# -----------------------------------------------------------------------------
+docs/_build/
+site/
+
+# MacOS Tauri specific
+# -----------------------------------------------------------------------------
+.bundle
+.cargo
+
+# Tool versions
+# -----------------------------------------------------------------------------
+.tool-versions
+.nvmrc
+.node-version
+
+# Backup files
+# -----------------------------------------------------------------------------
+*~
+*.bak
+*.backup
+*.old
+*.orig
+
+# End of Y-Data-House .gitignore
+# =============================================================================

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { invoke, convertFileSrc } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import Fuse from 'fuse.js';
 
 interface VideoInfo {
@@ -32,13 +33,16 @@ export default function App() {
       setFuse(undefined);
       return;
     }
-    fetch(`file://${selected.captions_path}`)
+    fetch(convertFileSrc(selected.captions_path))
       .then((r) => r.text())
       .then((text) => {
         const lines = text.split(/\r?\n/).filter(Boolean);
         const docs = lines.map((content, index) => ({ index, content }));
         setCaptions(docs);
         setFuse(new Fuse(docs, { keys: ['content'], threshold: 0.3 }));
+      })
+      .catch((error) => {
+        console.error('Failed to read captions file:', error);
       });
   }, [selected]);
 
