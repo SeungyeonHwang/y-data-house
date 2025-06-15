@@ -6,6 +6,7 @@ authors = ["Y-Data-House Team"]
 license = "MIT"
 repository = ""
 edition = "2021"
+build = "build.rs"
 
 [[bin]]
 name = "ydh-desktop"
