@@ -15,7 +15,8 @@
         "enable": true,
         "scope": {
           "allow": [
-            "$APP/vault/**"
+            "$APP/vault/**",
+            "/Users/hwang/Desktop/y-data-house/vault/**"
           ]
         }
       },
@@ -27,7 +28,8 @@
         "width": 1200,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "label": "main"
       }
     ]
   },

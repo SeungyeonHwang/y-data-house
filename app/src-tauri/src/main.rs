@@ -144,6 +144,12 @@ fn get_project_root() -> PathBuf {
 
 // 디버그 정보 조회
 #[command]
+fn get_project_root_path() -> Result<String, String> {
+    let project_root = get_project_root();
+    Ok(project_root.to_string_lossy().to_string())
+}
+
+#[command]
 fn get_debug_info() -> Result<String, String> {
     let current_dir = env::current_dir().map_err(|e| e.to_string())?;
     let project_root = get_project_root();
@@ -1126,29 +1132,7 @@ fn get_config() -> Result<String, String> {
     }
 }
 
-#[command]
-fn read_video_file(file_path: String) -> Result<Vec<u8>, String> {
-    let project_root = get_project_root();
-    let full_path = project_root.join(&file_path);
-    
-    if !full_path.exists() {
-        return Err(format!("파일이 존재하지 않습니다: {}", full_path.display()));
-    }
-    
-    fs::read(&full_path).map_err(|e| format!("파일 읽기 실패: {}", e))
-}
 
-#[command]
-fn read_captions_file(file_path: String) -> Result<String, String> {
-    let project_root = get_project_root();
-    let full_path = project_root.join(&file_path);
-    
-    if !full_path.exists() {
-        return Err(format!("파일이 존재하지 않습니다: {}", full_path.display()));
-    }
-    
-    fs::read_to_string(&full_path).map_err(|e| format!("파일 읽기 실패: {}", e))
-}
 
 fn main() {
     tauri::Builder::default()
@@ -1170,9 +1154,8 @@ fn main() {
             check_integrity_with_progress,
             get_app_status,
             get_recent_videos_by_channel,
-            get_config,
-            read_video_file,
-            read_captions_file
+                          get_config,
+              get_project_root_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
