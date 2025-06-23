@@ -1,9 +1,0 @@
-# Y-Data-House Video Storage
-# 
-# 이 디렉토리는 다운로드된 YouTube 비디오들이 저장되는 곳입니다.
-# 구조: {channel_name}/{YYYY}/{YYYYMMDD}_{title_slug}/
-# 
-# 파일들:
-# - video.mp4 (실제 비디오 파일)
-# - captions.txt (원본 자막)
-# - captions.md (처리된 마크다운 노트) 
