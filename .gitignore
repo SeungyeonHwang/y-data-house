@@ -99,8 +99,8 @@ download_progress.json
 result/
 
 # 다운로드된 비디오 파일들 (용량이 큰 실제 파일들만 제외)
-downloads/*
-!downloads/*_downloaded.txt
+vault/downloads/*
+!vault/downloads/*_downloaded.txt
 
 # 환경 설정 파일
 # -----------------------------------------------------------------------------
