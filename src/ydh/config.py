@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     language: str = "ko"
     
     # 다운로드 옵션
-    max_quality: str = "1080p"
+    max_quality: str = "720p"
     max_downloads_per_run: int = 0  # 무제한으로 변경
     delete_vtt_after_conversion: bool = True
     detailed_debug: bool = False

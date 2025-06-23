@@ -68,6 +68,7 @@ class VideoDownloader:
     def get_channel_videos(self, channel_url: str) -> List[Dict[str, Any]]:
         """
         채널 URL에서 영상 목록을 가져옵니다.
+        최신 yt-dlp 버전의 extract_flat 버그를 회피하고 100개 이상 채널도 처리합니다.
         
         Args:
             channel_url: YouTube 채널 URL
@@ -77,36 +78,196 @@ class VideoDownloader:
         """
         logger.info("채널 영상 목록 수집 중...")
         
-        # 채널 정보 조회 옵션
-        ydl_opts = {
+        # 🔥 FIXED: 최신 yt-dlp 안정화 옵션
+        base_opts = {
             'quiet': True,
-            'extract_flat': 'in_playlist',
+            'extract_flat': True,  # True로 단순화 (discard_in_playlist는 실제 옵션이 아님)
             'ignoreerrors': True,
             'no_warnings': True,
-            'embedsubtitles': False,
+            'skip_download': True,
             'logger': self.yt_dlp_logger,
             'http_headers': {
                 'User-Agent': settings.user_agent,
             },
             # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
             'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
+            # 🔥 NEW: 타임아웃 추가 (멈춤 방지)
+            'socket_timeout': 30,
+            'retries': 2,
         }
         
+        # 🔥 FIXED: 채널 URL을 videos 탭으로 변경
+        videos_url = channel_url  # 기본적으로는 원본 URL 사용
+        if '@' in channel_url and not channel_url.endswith('/videos'):
+            videos_url = f"{channel_url}/videos"
+        elif ('/c/' in channel_url or '/channel/' in channel_url) and not channel_url.endswith('/videos'):
+            videos_url = f"{channel_url}/videos"
+        
+        logger.debug(f"채널 비디오 URL: {videos_url}")
+        
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                result = ydl.extract_info(channel_url, download=False)
+            # 🔥 NEW: 1단계 - 전체 플레이리스트 길이 확인
+            logger.debug("yt-dlp로 채널 정보 추출 시작...")
+            with yt_dlp.YoutubeDL(base_opts) as ydl:
+                result = ydl.extract_info(videos_url, download=False)
+                logger.debug("채널 정보 추출 완료")
                 
                 if not result or 'entries' not in result:
-                    logger.error("채널 정보를 가져오지 못했습니다.")
-                    return []
+                    logger.warning("entries가 없습니다. 원본 URL로 재시도...")
+                    # 🔥 FIXED: videos URL이 실패하면 원본 URL로 재시도
+                    fallback_url = channel_url if videos_url != channel_url else channel_url.replace('/videos', '')
+                    logger.debug(f"폴백 URL: {fallback_url}")
+                    result = ydl.extract_info(fallback_url, download=False)
+                    if not result or 'entries' not in result:
+                        logger.error("채널 정보를 가져오지 못했습니다.")
+                        return []
                 
-                videos = [entry for entry in result['entries'] if entry]
+                # 전체 영상 수 확인
+                total_count = result.get('playlist_count', 0) or len([e for e in result['entries'] if e])
+                logger.info(f"채널 전체 영상 수: {total_count}개")
+                
+                # 🔥 NEW: 2단계 - 100개 이상이면 페이징 처리
+                if total_count <= 100:
+                    # 100개 이하면 한 번에 처리
+                    videos = self._extract_valid_videos(result['entries'])
+                else:
+                    # 100개 이상이면 구간별로 나눠서 처리
+                    logger.info(f"대용량 채널 감지: {total_count}개 영상을 100개씩 나눠서 처리")
+                    videos = self._fetch_videos_in_chunks(videos_url, total_count, base_opts)
+                
                 logger.info(f"총 {len(videos)}개 영상을 발견했습니다.")
+                
+                # 🔥 NEW: 디버깅을 위해 처음 5개 비디오 ID 로그
+                if settings.detailed_debug and videos:
+                    sample_ids = [v.get('id', 'NO_ID') for v in videos[:5]]
+                    logger.debug(f"샘플 비디오 IDs: {sample_ids}")
+                
                 return videos
                 
         except Exception as e:
             logger.error(f"채널 정보 수집 중 오류 발생: {e}")
-            return []
+            # 🔥 NEW: 3단계 - 폴백: 풀 메타데이터 추출 후 필터링
+            return self._fallback_full_extraction(channel_url)
+    
+    def _extract_valid_videos(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        유효한 비디오만 필터링합니다.
+        
+        Args:
+            entries: yt-dlp에서 반환된 entries
+            
+        Returns:
+            List[Dict[str, Any]]: 유효한 비디오 목록
+        """
+        videos = []
+        for entry in entries:
+            if entry and entry.get('id'):
+                video_id = entry.get('id', '')
+                # 채널 ID (UC로 시작하고 22-24자리)가 아닌 실제 비디오 ID만 포함
+                if not (video_id.startswith('UC') and len(video_id) >= 22):
+                    # 정상적인 비디오 ID는 보통 11자리
+                    if len(video_id) == 11:
+                        videos.append(entry)
+                    else:
+                        logger.debug(f"이상한 ID 제외: {video_id}")
+        return videos
+    
+    def _fetch_videos_in_chunks(self, videos_url: str, total_count: int, base_opts: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        대용량 채널의 영상을 100개씩 나눠서 가져옵니다.
+        
+        Args:
+            videos_url: 채널 비디오 URL
+            total_count: 전체 영상 수
+            base_opts: 기본 yt-dlp 옵션
+            
+        Returns:
+            List[Dict[str, Any]]: 전체 비디오 목록
+        """
+        all_videos = []
+        chunk_size = 100
+        
+        for start in range(1, total_count + 1, chunk_size):
+            end = min(start + chunk_size - 1, total_count)
+            playlist_items = f"{start}-{end}"
+            
+            logger.info(f"영상 {start}-{end} 처리 중... ({len(all_videos)}/{total_count})")
+            
+            chunk_opts = {
+                **base_opts,
+                'playlist_items': playlist_items
+            }
+            
+            try:
+                with yt_dlp.YoutubeDL(chunk_opts) as ydl:
+                    result = ydl.extract_info(videos_url, download=False)
+                    
+                    if result and 'entries' in result:
+                        chunk_videos = self._extract_valid_videos(result['entries'])
+                        all_videos.extend(chunk_videos)
+                        
+                        if settings.detailed_debug:
+                            logger.debug(f"청크 {start}-{end}: {len(chunk_videos)}개 영상 추가")
+                    
+                    # 서버 부하 방지
+                    time.sleep(0.5)
+                    
+            except Exception as e:
+                logger.warning(f"청크 {start}-{end} 처리 실패: {e}")
+                continue
+        
+        return all_videos
+    
+    def _fallback_full_extraction(self, channel_url: str) -> List[Dict[str, Any]]:
+        """
+        플랫 추출 실패 시 풀 메타데이터 추출 후 필터링하는 폴백 방법.
+        
+        Args:
+            channel_url: 채널 URL
+            
+        Returns:
+            List[Dict[str, Any]]: 비디오 목록
+        """
+        logger.warning("플랫 추출 실패. 풀 메타데이터 추출로 폴백...")
+        
+        fallback_opts = {
+            'quiet': True,
+            'extract_flat': False,  # 풀 메타데이터 추출
+            'ignoreerrors': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'logger': self.yt_dlp_logger,
+            'http_headers': {
+                'User-Agent': settings.user_agent,
+            },
+            'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
+            'playlist_end': 200,  # 최대 200개로 제한
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                result = ydl.extract_info(channel_url, download=False)
+                
+                if result and 'entries' in result:
+                    # 필수 필드만 추출해서 경량화
+                    videos = []
+                    for entry in result['entries']:
+                        if entry and entry.get('id'):
+                            videos.append({
+                                'id': entry['id'],
+                                'title': entry.get('title', '제목 없음'),
+                                'url': entry.get('webpage_url', f"https://www.youtube.com/watch?v={entry['id']}"),
+                                'upload_date': entry.get('upload_date', ''),
+                                'duration': entry.get('duration', 0),
+                            })
+                    
+                    logger.info(f"폴백으로 {len(videos)}개 영상 추출 완료")
+                    return videos
+                    
+        except Exception as e:
+            logger.error(f"폴백 추출도 실패: {e}")
+        
+        return []
     
     def get_video_info(self, video_url: str) -> Optional[Dict[str, Any]]:
         """
@@ -201,10 +362,20 @@ class VideoDownloader:
         if settings.max_quality:
             if settings.max_quality == "best" or settings.max_quality == "high":
                 format_selector = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best'
+            elif settings.max_quality == "4k" or settings.max_quality == "2160p":
+                format_selector = 'bestvideo[ext=mp4][height<=2160]+bestaudio[ext=m4a]/best[height<=2160]/best'
+            elif settings.max_quality == "1440p" or settings.max_quality == "2k":
+                format_selector = 'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/best[height<=1440]/best'
+            elif settings.max_quality == "1080p":
+                format_selector = 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height<=1080]/best'
             elif settings.max_quality == "720p" or settings.max_quality == "medium":
                 format_selector = 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]/best'
             elif settings.max_quality == "480p" or settings.max_quality == "low":
                 format_selector = 'bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[height<=480]/best'
+            elif settings.max_quality == "360p":
+                format_selector = 'bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/best[height<=360]/best'
+            elif settings.max_quality == "audio-only":
+                format_selector = 'bestaudio[ext=m4a]/bestaudio'
         
         # yt-dlp 옵션 설정
         ydl_opts = {
@@ -235,8 +406,6 @@ class VideoDownloader:
             'postprocessor_args': {
                 'ffmpeg': ['-c', 'copy', '-sn'],
             },
-            # 다운로드 아카이브 사용
-            'download_archive': str(self.get_downloaded_archive_path(channel_name)),
         }
         
         try:
@@ -250,6 +419,9 @@ class VideoDownloader:
                     
                     # 🔥 NEW: 비디오 메타데이터를 JSON 파일로 저장
                     self._save_video_metadata(video_info, output_folder)
+                    
+                    # 🔥 FIXED: 다운로드 성공 후에만 아카이브에 기록
+                    self._add_to_archive(video_id, channel_name)
                     
                     return True
                 else:
@@ -315,6 +487,7 @@ class VideoDownloader:
     def _load_downloaded_archive(self, channel_name: str) -> Set[str]:
         """
         다운로드 아카이브 파일에서 이미 다운로드된 영상 ID 목록을 로드합니다.
+        실제 파일이 존재하는 경우만 "다운로드 완료"로 처리합니다.
         
         Args:
             channel_name: 채널 이름
@@ -324,6 +497,7 @@ class VideoDownloader:
         """
         archive_path = self.get_downloaded_archive_path(channel_name)
         downloaded_ids = set()
+        invalid_ids = []
         
         if archive_path.exists():
             try:
@@ -332,12 +506,101 @@ class VideoDownloader:
                         line = line.strip()
                         if line and line.startswith('youtube '):
                             video_id = line.split(' ', 1)[1]
-                            downloaded_ids.add(video_id)
+                            
+                            # 🔥 FIXED: 실제 파일 존재 여부 체크
+                            if self._video_file_exists(video_id):
+                                downloaded_ids.add(video_id)
+                            else:
+                                invalid_ids.append(video_id)
+                                
                 logger.debug(f"아카이브에서 {len(downloaded_ids)}개 영상 ID 로드완료")
+                
+                # 🔥 FIXED: 실제 파일이 없는 ID들은 아카이브에서 제거
+                if invalid_ids:
+                    logger.info(f"실제 파일이 없는 {len(invalid_ids)}개 영상을 아카이브에서 제거")
+                    self._clean_archive(archive_path, invalid_ids)
+                    
             except Exception as e:
                 logger.warning(f"아카이브 파일 읽기 실패: {e}")
         
         return downloaded_ids
+    
+    def _video_file_exists(self, video_id: str) -> bool:
+        """
+        비디오 파일이 downloads 폴더나 vault에 존재하는지 확인합니다.
+        
+        Args:
+            video_id: 비디오 ID
+            
+        Returns:
+            bool: 파일 존재 여부
+        """
+        # downloads 폴더에서 찾기
+        for folder in settings.download_path.iterdir():
+            if folder.is_dir():
+                # metadata.json에서 비디오 ID 확인
+                metadata_file = folder / 'metadata.json'
+                if metadata_file.exists():
+                    try:
+                        import json
+                        with open(metadata_file, 'r', encoding='utf-8') as f:
+                            metadata = json.load(f)
+                            if metadata.get('id') == video_id:
+                                # 실제 비디오 파일이 있는지 확인
+                                video_files = list(folder.glob('*.mp4'))
+                                if video_files:
+                                    return True
+                    except Exception:
+                        pass
+        
+        # vault 폴더에서 찾기 (이미 처리된 영상)
+        vault_path = settings.vault_root / "10_videos"
+        if vault_path.exists():
+            for channel_folder in vault_path.iterdir():
+                if channel_folder.is_dir():
+                    for year_folder in channel_folder.iterdir():
+                        if year_folder.is_dir():
+                            for video_folder in year_folder.iterdir():
+                                if video_folder.is_dir():
+                                    # captions.md에서 video_id 확인
+                                    md_file = video_folder / 'captions.md'
+                                    if md_file.exists():
+                                        try:
+                                            with open(md_file, 'r', encoding='utf-8') as f:
+                                                content = f.read()
+                                                if f"video_id: {video_id}" in content:
+                                                    return True
+                                        except Exception:
+                                            pass
+        
+        return False
+    
+    def _clean_archive(self, archive_path: Path, invalid_ids: List[str]) -> None:
+        """
+        아카이브에서 유효하지 않은 ID들을 제거합니다.
+        
+        Args:
+            archive_path: 아카이브 파일 경로
+            invalid_ids: 제거할 ID 목록
+        """
+        try:
+            # 기존 내용 읽기
+            valid_lines = []
+            with open(archive_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and line.startswith('youtube '):
+                        video_id = line.split(' ', 1)[1]
+                        if video_id not in invalid_ids:
+                            valid_lines.append(line)
+            
+            # 유효한 라인들만 다시 쓰기
+            with open(archive_path, 'w', encoding='utf-8') as f:
+                for line in valid_lines:
+                    f.write(f"{line}\n")
+                    
+        except Exception as e:
+            logger.warning(f"아카이브 정리 실패: {e}")
     
     def download_channel_videos(self, channel_url: str, channel_name: str = "") -> Dict[str, int]:
         """
@@ -527,4 +790,17 @@ class VideoDownloader:
         if cleaned_count > 0:
             logger.info(f"불완전한 다운로드 파일 {cleaned_count}개 정리 완료")
         
-        return cleaned_count 
+        return cleaned_count
+
+    def _add_to_archive(self, video_id: str, channel_name: str) -> None:
+        """
+        다운로드된 영상을 아카이브에 추가합니다.
+        
+        Args:
+            video_id: 비디오 ID
+            channel_name: 채널 이름
+        """
+        archive_path = self.get_downloaded_archive_path(channel_name)
+        with open(archive_path, 'a', encoding='utf-8') as f:
+            f.write(f"youtube {video_id}\n")
+        logger.debug(f"아카이브에 영상 추가: {video_id}") 
