@@ -97,6 +97,17 @@ logs/
 download_progress.json
 result/
 
+# Y-Data-House Downloads 폴더 관리
+# 실제 비디오 파일들은 제외하고, 다운로드 기록만 포함
+vault/downloads/*.mp4
+vault/downloads/*.vtt
+vault/downloads/*.srt
+vault/downloads/*.json
+vault/downloads/*.part
+vault/downloads/*.tmp
+vault/downloads/*/
+!vault/downloads/*_downloaded.txt
+
 # 환경 설정 파일
 # -----------------------------------------------------------------------------
 .env
