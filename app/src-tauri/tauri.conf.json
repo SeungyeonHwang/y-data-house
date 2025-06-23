@@ -10,6 +10,17 @@
     "frontendDist": "dist"
   },
   "app": {
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": [
+            "$APP/vault/**"
+          ]
+        }
+      },
+      "csp": "default-src 'self' ipc: http://ipc.localhost; media-src 'self' asset: http://asset.localhost"
+    },
     "windows": [
       {
         "title": "YDH Desktop",

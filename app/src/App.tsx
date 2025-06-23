@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import Fuse from 'fuse.js';
 import './App.css';
@@ -70,6 +69,7 @@ export default function App() {
   const [selectedVideo, setSelectedVideo] = useState<VideoInfo | null>(null);
   const [captions, setCaptions] = useState<CaptionLine[]>([]);
   const [fuse, setFuse] = useState<Fuse<CaptionLine>>();
+  const [videoBlobUrl, setVideoBlobUrl] = useState<string | null>(null);
   
   // 채널 관련 상태
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
@@ -139,6 +139,11 @@ export default function App() {
       unlistenDownload.then(f => f());
       unlistenEmbedding.then(f => f());
       unlistenIntegrity.then(f => f());
+      
+      // Blob URL 정리
+      if (videoBlobUrl) {
+        URL.revokeObjectURL(videoBlobUrl);
+      }
     };
   }, []);
 
@@ -173,24 +178,53 @@ export default function App() {
     }
   };
 
-  // 선택된 비디오의 캡션 로드
+  // 선택된 비디오의 캡션 로드 및 비디오 Blob URL 생성
   useEffect(() => {
     if (!selectedVideo) {
       setCaptions([]);
       setFuse(undefined);
+      setVideoBlobUrl(null);
       return;
     }
     
-    fetch(convertFileSrc(selectedVideo.captions_path))
-      .then((r) => r.text())
+    console.log('🎬 비디오 선택됨:', {
+      title: selectedVideo.title,
+      video_path: selectedVideo.video_path,
+      captions_path: selectedVideo.captions_path
+    });
+
+    // 이전 Blob URL 정리
+    if (videoBlobUrl) {
+      URL.revokeObjectURL(videoBlobUrl);
+    }
+
+    // 비디오 파일을 Rust에서 읽어와서 Blob URL 생성
+    invoke<number[]>('read_video_file', { filePath: selectedVideo.video_path })
+      .then((bytes) => {
+        const uint8Array = new Uint8Array(bytes);
+        const blob = new Blob([uint8Array], { type: 'video/mp4' });
+        const blobUrl = URL.createObjectURL(blob);
+        setVideoBlobUrl(blobUrl);
+        console.log('🎥 비디오 Blob URL 생성 성공');
+      })
+      .catch((error) => {
+        console.error('❌ 비디오 파일 읽기 실패:', error);
+        setVideoBlobUrl(null);
+      });
+    
+    // Rust 백엔드를 통해 캡션 파일 읽기
+    invoke<string>('read_captions_file', { filePath: selectedVideo.captions_path })
       .then((text) => {
         const lines = text.split(/\r?\n/).filter(Boolean);
         const docs = lines.map((content, index) => ({ index, content }));
         setCaptions(docs);
         setFuse(new Fuse(docs, { keys: ['content'], threshold: 0.3 }));
+        console.log('📝 캡션 로드 성공:', docs.length, '줄');
       })
       .catch((error) => {
-        console.error('Failed to read captions file:', error);
+        console.error('❌ 캡션 파일 읽기 실패:', error);
+        console.log('캡션 경로:', selectedVideo.captions_path);
+        // asset protocol 대신 Rust 백엔드 사용으로 변경됨
       });
   }, [selectedVideo]);
 
@@ -791,15 +825,25 @@ export default function App() {
                 {selectedVideo ? (
                   <>
                     <video
-                      src={convertFileSrc(selectedVideo.video_path)}
+                      src={videoBlobUrl || ''}
                       controls
                       className="video-player"
+                      preload="metadata"
+                      style={{ width: '100%', height: 'auto' }}
                       onError={(e) => {
                         console.error('Video load error:', e);
                         console.log('Video path:', selectedVideo.video_path);
-                        console.log('Converted path:', convertFileSrc(selectedVideo.video_path));
+                        console.log('Blob URL:', videoBlobUrl);
                       }}
-                    />
+                      onLoadStart={() => {
+                        console.log('Video load started:', selectedVideo.video_path);
+                      }}
+                      onCanPlay={() => {
+                        console.log('Video can play successfully:', selectedVideo.video_path);
+                      }}
+                    >
+                      {videoBlobUrl ? '비디오를 로드할 수 없습니다.' : '비디오 로딩 중...'}
+                    </video>
                     <div className="video-info">
                       <h3 className="video-title-main">{selectedVideo.title}</h3>
                       <p className="video-channel-main">{selectedVideo.channel}</p>

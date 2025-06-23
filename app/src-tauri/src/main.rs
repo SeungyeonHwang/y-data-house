@@ -222,13 +222,27 @@ fn collect_videos(dir: &PathBuf, videos: &mut Vec<VideoInfo>) -> Result<(), Stri
                 }
             };
             
+            // 프로젝트 루트 기준 상대 경로 생성 (asset protocol 호환)
+            let project_root = get_project_root();
+            
+            // 비디오 파일 상대 경로
+            let video_relative = if let Ok(relative) = path.strip_prefix(&project_root) {
+                relative.to_string_lossy().to_string()
+            } else {
+                path.to_string_lossy().to_string()
+            };
+            
+            // 캡션 파일 상대 경로
+            let captions_file = if captions_txt.exists() { captions_txt } else { captions_md };
+            let captions_relative = if let Ok(relative) = captions_file.strip_prefix(&project_root) {
+                relative.to_string_lossy().to_string()
+            } else {
+                captions_file.to_string_lossy().to_string()
+            };
+            
             videos.push(VideoInfo {
-                video_path: path.to_string_lossy().to_string(),
-                captions_path: if captions_txt.exists() { 
-                    captions_txt.to_string_lossy().to_string() 
-                } else { 
-                    captions_md.to_string_lossy().to_string() 
-                },
+                video_path: video_relative,
+                captions_path: captions_relative,
                 title: metadata.title,
                 channel: metadata.channel,
                 upload_date: metadata.upload_date,
@@ -619,7 +633,7 @@ async fn download_videos_with_progress(window: Window) -> Result<String, String>
                     let reader = BufReader::new(stderr);
                     for line in reader.lines() {
                         if let Ok(line) = line {
-                                                         let (parsed_progress, video_title, status_msg) = parse_ydh_output(&line);
+                                                         let (_parsed_progress, _video_title, status_msg) = parse_ydh_output(&line);
                              
                              // 에러 메시지는 별도 처리
                              let error_progress = DownloadProgress {
@@ -1112,8 +1126,33 @@ fn get_config() -> Result<String, String> {
     }
 }
 
+#[command]
+fn read_video_file(file_path: String) -> Result<Vec<u8>, String> {
+    let project_root = get_project_root();
+    let full_path = project_root.join(&file_path);
+    
+    if !full_path.exists() {
+        return Err(format!("파일이 존재하지 않습니다: {}", full_path.display()));
+    }
+    
+    fs::read(&full_path).map_err(|e| format!("파일 읽기 실패: {}", e))
+}
+
+#[command]
+fn read_captions_file(file_path: String) -> Result<String, String> {
+    let project_root = get_project_root();
+    let full_path = project_root.join(&file_path);
+    
+    if !full_path.exists() {
+        return Err(format!("파일이 존재하지 않습니다: {}", full_path.display()));
+    }
+    
+    fs::read_to_string(&full_path).map_err(|e| format!("파일 읽기 실패: {}", e))
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_debug_info,
             list_videos,
@@ -1131,7 +1170,9 @@ fn main() {
             check_integrity_with_progress,
             get_app_status,
             get_recent_videos_by_channel,
-            get_config
+            get_config,
+            read_video_file,
+            read_captions_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
