@@ -1344,6 +1344,48 @@ html, body {
   justify-content: flex-end;
 }
 
+/* 진행 상황 액션 버튼 */
+.progress-actions {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #30363d;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.cancel-btn {
+  background: #da3633;
+  border: 1px solid #f85149;
+  color: #f0f6fc;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background: #f85149;
+  border-color: #ff7b72;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(248, 81, 73, 0.2);
+}
+
+.cancel-btn:disabled {
+  background: #21262d;
+  border-color: #30363d;
+  color: #6e7681;
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
+  box-shadow: none;
+}
+
 /* 애니메이션 */
 .loading {
   opacity: 0.7;

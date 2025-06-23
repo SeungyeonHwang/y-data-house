@@ -133,7 +133,18 @@ export default function App() {
     const unlistenDownload = listen<DownloadProgress>('download-progress', (event) => {
       const progress = event.payload;
       setDownloadProgress(progress);
-      setDownloadLogs(prev => [...prev, progress.log_message].slice(-50)); // 최근 50개 로그만 유지
+      
+      // 빈 로그 메시지 필터링 및 중복 제거
+      if (progress.log_message && progress.log_message.trim()) {
+        setDownloadLogs(prev => {
+          const newLogs = [...prev, progress.log_message];
+          // 중복된 연속 로그 제거
+          const filtered = newLogs.filter((log, index) => 
+            index === 0 || log !== newLogs[index - 1]
+          );
+          return filtered.slice(-100); // 최근 100개 로그만 유지
+        });
+      }
     });
     
     // 벡터 임베딩 진행 상황 이벤트 리스너
@@ -347,6 +358,16 @@ export default function App() {
       setIntegrityLogs(prev => [...prev, `❌ 정합성 검사 실패: ${err}`]);
     } finally {
       setCheckLoading(false);
+    }
+  };
+
+  // 다운로드 중단
+  const cancelDownload = async () => {
+    try {
+      await invoke('cancel_download');
+      setDownloadLogs(prev => [...prev, '🛑 사용자가 다운로드를 중단했습니다']);
+    } catch (err) {
+      setDownloadLogs(prev => [...prev, `❌ 중단 실패: ${err}`]);
     }
   };
 
@@ -566,6 +587,17 @@ export default function App() {
                     className="progress-bar"
                     style={{ width: `${downloadProgress.progress}%` }}
                   />
+                </div>
+                
+                {/* 중단 버튼 */}
+                <div className="progress-actions">
+                  <button 
+                    className="cancel-btn"
+                    onClick={cancelDownload}
+                    disabled={!downloadLoading || downloadProgress?.status === "중단됨" || downloadProgress?.status === "완료"}
+                  >
+                    🛑 다운로드 중단
+                  </button>
                 </div>
               </div>
             )}
