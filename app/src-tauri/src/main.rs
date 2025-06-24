@@ -918,7 +918,262 @@ async fn download_videos() -> Result<String, String> {
     Ok(results.join("\n"))
 }
 
-// 벡터 임베딩 생성 (진행 상황 포함)
+// 채널별 임베딩 생성을 위한 상태 관리
+#[derive(Default, Clone)]
+struct EmbeddingState {
+    is_cancelled: Arc<AtomicBool>,
+    current_process: Arc<Mutex<Option<std::process::Child>>>,
+}
+
+// 사용 가능한 채널 목록 조회
+#[command]
+fn get_available_channels_for_embedding() -> Result<Vec<String>, String> {
+    let project_root = get_project_root();
+    let videos_path = project_root.join("vault").join("10_videos");
+    
+    if !videos_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let mut channels = Vec::new();
+    
+    match fs::read_dir(&videos_path) {
+        Ok(entries) => {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Some(channel_name) = path.file_name() {
+                            if let Some(name_str) = channel_name.to_str() {
+                                channels.push(name_str.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => return Err(format!("채널 디렉토리 읽기 실패: {}", e)),
+    }
+    
+    channels.sort();
+    Ok(channels)
+}
+
+// 채널별 임베딩 생성 (진행 상황 포함)
+#[command]
+async fn create_embeddings_for_channels_with_progress(
+    window: Window, 
+    channels: Vec<String>,
+    state: State<'_, EmbeddingState>
+) -> Result<String, String> {
+    let project_root = get_project_root();
+    let embed_script = project_root.join("vault").join("90_indices").join("embed.py");
+    if !embed_script.exists() {
+        return Err(format!("embed.py 스크립트를 찾을 수 없습니다: {}", embed_script.display()));
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    if !venv_python.exists() {
+        return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
+    }
+    
+    // 중단 상태 초기화
+    state.is_cancelled.store(false, Ordering::Relaxed);
+    
+    if channels.is_empty() {
+        return Err("선택된 채널이 없습니다.".to_string());
+    }
+    
+    let total_channels = channels.len() as u32;
+    let mut completed_channels = 0u32;
+    let mut all_output = Vec::new();
+    
+    // 시작 진행 상황
+    let start_progress = DownloadProgress {
+        channel: format!("벡터 임베딩 ({} 채널)", total_channels),
+        status: "시작".to_string(),
+        progress: 0.0,
+        current_video: format!("선택된 {} 채널의 임베딩 생성 준비 중...", total_channels),
+        total_videos: total_channels,
+        completed_videos: 0,
+        log_message: format!("🧠 {} 채널의 벡터 임베딩 생성을 시작합니다...", total_channels),
+    };
+    let _ = window.emit("embedding-progress", &start_progress);
+    
+    // 모든 선택된 채널을 한 번에 처리
+    let processing_progress = DownloadProgress {
+        channel: format!("벡터 임베딩 ({} 채널)", total_channels),
+        status: "처리 중".to_string(),
+        progress: 50.0,
+        current_video: format!("📺 선택된 {} 채널 처리 중...", total_channels),
+        total_videos: total_channels,
+        completed_videos: 0,
+        log_message: format!("📊 {} 채널의 벡터 임베딩 생성 중...", channels.join(", ")),
+    };
+    let _ = window.emit("embedding-progress", &processing_progress);
+    
+    // Python 스크립트 실행 (선택된 모든 채널을 한 번에 처리)
+    let mut cmd = Command::new(&venv_python)
+        .arg(&embed_script)
+        .arg("channels")  // 특정 채널 모드
+        .args(&channels)  // 선택된 채널들
+        .current_dir(&project_root)
+        .env("PYTHONUNBUFFERED", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("스크립트 실행 실패: {}", e))?;
+    
+    // 실시간 출력 처리를 위한 BufReader 설정
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::thread;
+    
+    let mut child = cmd;
+    
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    
+    // stdout 실시간 처리 스레드
+    let (tx, rx) = mpsc::channel();
+    let tx_clone = tx.clone();
+    
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                let _ = tx.send(("stdout".to_string(), line));
+            }
+        }
+    });
+    
+    // stderr 실시간 처리 스레드
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                let _ = tx_clone.send(("stderr".to_string(), line));
+            }
+        }
+    });
+    
+    // 실시간 로그 처리 루프
+    let mut process_complete = false;
+    while !process_complete {
+        // 중단 확인
+        if state.is_cancelled.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            
+            let cancel_progress = DownloadProgress {
+                channel: format!("벡터 임베딩 ({} 채널)", total_channels),
+                status: "중단됨".to_string(),
+                progress: 50.0,
+                current_video: "사용자가 중단했습니다".to_string(),
+                total_videos: total_channels,
+                completed_videos: 0,
+                log_message: "🛑 사용자가 임베딩 생성을 중단했습니다".to_string(),
+            };
+            let _ = window.emit("embedding-progress", &cancel_progress);
+            return Ok(format!("임베딩 생성이 중단되었습니다."));
+        }
+        
+        // 출력 받기 (타임아웃 설정)
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok((stream_type, line)) => {
+                if !line.trim().is_empty() {
+                    let log_progress = DownloadProgress {
+                        channel: format!("벡터 임베딩 ({} 채널)", total_channels),
+                        status: "처리 중".to_string(),
+                        progress: 70.0,
+                        current_video: "📺 임베딩 생성 중".to_string(),
+                        total_videos: total_channels,
+                        completed_videos: 0,
+                        log_message: if stream_type == "stderr" { 
+                            format!("⚠️ {}", line) 
+                        } else { 
+                            line.clone() 
+                        },
+                    };
+                    let _ = window.emit("embedding-progress", &log_progress);
+                    all_output.push(line);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // 프로세스가 완료되었는지 확인
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        process_complete = true;
+                        if !status.success() {
+                            let error_progress = DownloadProgress {
+                                channel: format!("벡터 임베딩 ({} 채널)", total_channels),
+                                status: "실패".to_string(),
+                                progress: 0.0,
+                                current_video: "❌ 임베딩 생성 실패".to_string(),
+                                total_videos: total_channels,
+                                completed_videos: 0,
+                                log_message: "❌ Python 스크립트 실행 실패".to_string(),
+                            };
+                            let _ = window.emit("embedding-progress", &error_progress);
+                            return Err("임베딩 생성 실패".to_string());
+                        }
+                    }
+                    Ok(None) => {
+                        // 아직 실행 중
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(format!("프로세스 상태 확인 실패: {}", e));
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // 스레드가 종료됨, 프로세스 완료 확인
+                let _ = child.wait();
+                process_complete = true;
+            }
+        }
+    }
+    
+    // 현재 프로세스 정리
+    {
+        let mut process_guard = state.current_process.lock().unwrap();
+        *process_guard = None;
+    }
+    
+    completed_channels = total_channels;
+    
+    if state.is_cancelled.load(Ordering::Relaxed) {
+        return Ok(format!("임베딩 생성이 중단되었습니다. {}개 채널 완료", completed_channels));
+    }
+    
+    // 최종 완료
+    let final_progress = DownloadProgress {
+        channel: format!("벡터 임베딩 ({} 채널)", total_channels),
+        status: "완료".to_string(),
+        progress: 100.0,
+        current_video: "모든 채널 임베딩 완료".to_string(),
+        total_videos: total_channels,
+        completed_videos: completed_channels,
+        log_message: format!("🎉 {}개 채널의 벡터 임베딩 생성이 완료되었습니다!", total_channels),
+    };
+    let _ = window.emit("embedding-progress", &final_progress);
+    
+    Ok(format!("✅ {}개 채널의 벡터 임베딩 생성 완료\n{}", total_channels, all_output.join("\n")))
+}
+
+// 임베딩 생성 중단
+#[command]
+async fn cancel_embedding(state: State<'_, EmbeddingState>) -> Result<(), String> {
+    state.is_cancelled.store(true, Ordering::Relaxed);
+    
+    // 실행 중인 프로세스는 메인 루프에서 처리됨
+    // 여기서는 중단 플래그만 설정
+    
+    Ok(())
+}
+
+// 벡터 임베딩 생성 (진행 상황 포함) - 기존 호환성 유지
 #[command]
 async fn create_embeddings_with_progress(window: Window) -> Result<String, String> {
     let project_root = get_project_root();
@@ -944,30 +1199,6 @@ async fn create_embeddings_with_progress(window: Window) -> Result<String, Strin
     };
     let _ = window.emit("embedding-progress", &start_progress);
     
-    // 진행률 업데이트 (25% - 시작)
-    let progress_25 = DownloadProgress {
-        channel: "벡터 임베딩".to_string(),
-        status: "시작".to_string(),
-        progress: 25.0,
-        current_video: "스크립트 실행 중...".to_string(),
-        total_videos: 1,
-        completed_videos: 0,
-        log_message: "🧠 벡터 임베딩 스크립트 실행 중...".to_string(),
-    };
-    let _ = window.emit("embedding-progress", &progress_25);
-    
-    // 진행률 업데이트 (50% - 처리 중)
-    let progress_50 = DownloadProgress {
-        channel: "벡터 임베딩".to_string(),
-        status: "처리 중".to_string(),
-        progress: 50.0,
-        current_video: "임베딩 생성 중...".to_string(),
-        total_videos: 1,
-        completed_videos: 0,
-        log_message: "📊 비디오 자막 분석 및 임베딩 생성 중...".to_string(),
-    };
-    let _ = window.emit("embedding-progress", &progress_50);
-    
     // Python 스크립트 실행
     let output = Command::new(&venv_python)
         .arg(&embed_script)
@@ -975,18 +1206,6 @@ async fn create_embeddings_with_progress(window: Window) -> Result<String, Strin
         .env("PYTHONUNBUFFERED", "1")
         .output()
         .map_err(|e| e.to_string())?;
-    
-    // 진행률 업데이트 (75% - 거의 완료)
-    let progress_75 = DownloadProgress {
-        channel: "벡터 임베딩".to_string(),
-        status: "완료 중".to_string(),
-        progress: 75.0,
-        current_video: "임베딩 저장 중...".to_string(),
-        total_videos: 1,
-        completed_videos: 0,
-        log_message: "💾 ChromaDB에 벡터 임베딩 저장 중...".to_string(),
-    };
-    let _ = window.emit("embedding-progress", &progress_75);
     
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1139,13 +1358,71 @@ async fn check_integrity_with_progress(window: Window) -> Result<String, String>
     };
     let _ = window.emit("integrity-progress", &progress_50);
     
-    // Python 명령어 실행
-    let output = Command::new(&venv_python)
-        .args(&["-m", "ydh", "config-validate"])
+    // 새로운 채널별 격리 정합성 검사 스크립트 실행 (실시간 로그)
+    let integrity_script = project_root.join("vault").join("90_indices").join("integrity_check.py");
+    if !integrity_script.exists() {
+        return Err(format!("정합성 검사 스크립트를 찾을 수 없습니다: {}", integrity_script.display()));
+    }
+    
+    let mut child = Command::new(&venv_python)
+        .arg(&integrity_script)
         .current_dir(&project_root)
         .env("PYTHONUNBUFFERED", "1")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| e.to_string())?;
+    
+    let stdout = child.stdout.take().ok_or("stdout를 가져올 수 없습니다")?;
+    let stderr = child.stderr.take().ok_or("stderr를 가져올 수 없습니다")?;
+    
+    // 별도 스레드에서 실시간 로그 처리
+    let window_clone = window.clone();
+    std::thread::spawn(move || {
+        let stdout_reader = std::io::BufReader::new(stdout);
+        for line in stdout_reader.lines() {
+            if let Ok(line) = line {
+                let line = line.trim();
+                if !line.is_empty() {
+                    let progress = DownloadProgress {
+                        channel: "정합성 검사".to_string(),
+                        status: "검사 중".to_string(),
+                        progress: 75.0,
+                        current_video: "실시간 검사 중...".to_string(),
+                        total_videos: 1,
+                        completed_videos: 0,
+                        log_message: line.to_string(),
+                    };
+                    let _ = window_clone.emit("integrity-progress", &progress);
+                }
+            }
+        }
+    });
+    
+    let window_clone2 = window.clone();
+    std::thread::spawn(move || {
+        let stderr_reader = std::io::BufReader::new(stderr);
+        for line in stderr_reader.lines() {
+            if let Ok(line) = line {
+                let line = line.trim();
+                if !line.is_empty() {
+                    let progress = DownloadProgress {
+                        channel: "정합성 검사".to_string(),
+                        status: "경고".to_string(),
+                        progress: 75.0,
+                        current_video: "실시간 검사 중...".to_string(),
+                        total_videos: 1,
+                        completed_videos: 0,
+                        log_message: format!("⚠️ {}", line),
+                    };
+                    let _ = window_clone2.emit("integrity-progress", &progress);
+                }
+            }
+        }
+    });
+    
+    // 프로세스 완료 대기
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
     
     // 진행률 업데이트 (75% - 거의 완료)
     let progress_75 = DownloadProgress {
@@ -1197,8 +1474,13 @@ async fn check_integrity() -> Result<String, String> {
         return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
     }
     
+    let integrity_script = project_root.join("vault").join("90_indices").join("integrity_check.py");
+    if !integrity_script.exists() {
+        return Err(format!("정합성 검사 스크립트를 찾을 수 없습니다: {}", integrity_script.display()));
+    }
+    
     let output = Command::new(&venv_python)
-        .args(&["-m", "ydh", "config-validate"])
+        .arg(&integrity_script)
         .current_dir(&project_root)
         .output()
         .map_err(|e| e.to_string())?;
@@ -1314,6 +1596,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .manage(DownloadState::default())
+        .manage(EmbeddingState::default())
         .invoke_handler(tauri::generate_handler![
             get_debug_info,
             list_videos,
@@ -1324,6 +1607,9 @@ fn main() {
             download_videos,
             download_videos_with_progress,
             cancel_download,
+            get_available_channels_for_embedding,
+            create_embeddings_for_channels_with_progress,
+            cancel_embedding,
             create_embeddings,
             create_embeddings_with_progress,
             vector_search,

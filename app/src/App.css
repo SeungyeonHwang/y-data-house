@@ -1389,4 +1389,182 @@ html, body {
 /* 애니메이션 */
 .loading {
   opacity: 0.7;
-} 
+}
+
+/* 채널 선택 UI */
+
+.channel-selector {
+  padding: 20px;
+  background: #0d1117;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+}
+
+.channel-selector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #30363d;
+}
+
+.channel-selector-header h4 {
+  margin: 0;
+  color: #f0f6fc;
+  font-size: 1.1rem;
+}
+
+.toggle-all-btn {
+  background: #21262d;
+  color: #58a6ff;
+  border: 1px solid #30363d;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.toggle-all-btn:hover {
+  background: #30363d;
+  border-color: #58a6ff;
+}
+
+.channel-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.channel-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.channel-checkbox:hover {
+  background: #30363d;
+  border-color: #58a6ff;
+}
+
+.channel-checkbox input[type="checkbox"] {
+  accent-color: #58a6ff;
+  width: 16px;
+  height: 16px;
+}
+
+.channel-name {
+  color: #f0f6fc;
+  font-size: 0.9rem;
+  flex: 1;
+}
+
+.channel-selector-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid #30363d;
+}
+
+.selected-count {
+  color: #8b949e;
+  font-size: 0.9rem;
+}
+
+.channel-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.channel-actions .btn-secondary {
+  padding: 8px 16px;
+  font-size: 0.9rem;
+}
+
+.channel-actions .btn-primary {
+  padding: 8px 16px;
+  font-size: 0.9rem;
+}
+
+/* 진행 상황 개선 */
+.modal-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-cancel {
+  background: #da3633;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.btn-cancel:hover:not(:disabled) {
+  background: #f85149;
+  transform: translateY(-1px);
+}
+
+.btn-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.current-log {
+  margin-top: 12px;
+  padding: 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #f0f6fc;
+  font-size: 0.9rem;
+}
+
+.current-log strong {
+  color: #58a6ff;
+}
+
+.progress-stats span {
+  background: #21262d;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  border: 1px solid #30363d;
+  color: #f0f6fc;
+}
+
+.log-line {
+  padding: 8px 12px;
+  margin: 2px 0;
+  background: #0d1117;
+  border-left: 3px solid #30363d;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  color: #e6edf3;
+  word-wrap: break-word;
+}
+
+.log-line:hover {
+  background: #161b22;
+  border-left-color: #58a6ff;
+}
+
+.log-line.current {
+  border-left-color: #58a6ff;
+  background: #0d1821;
+}

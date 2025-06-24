@@ -112,6 +112,9 @@ export default function App() {
   const [embeddingProgress, setEmbeddingProgress] = useState<DownloadProgress | null>(null);
   const [embeddingLogs, setEmbeddingLogs] = useState<string[]>([]);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
+  const [availableChannels, setAvailableChannels] = useState<string[]>([]);
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  const [showChannelSelector, setShowChannelSelector] = useState(false);
   
   // 정합성 검사 상태
   const [checkLoading, setCheckLoading] = useState(false);
@@ -151,7 +154,16 @@ export default function App() {
     const unlistenEmbedding = listen<DownloadProgress>('embedding-progress', (event) => {
       const progress = event.payload;
       setEmbeddingProgress(progress);
-      setEmbeddingLogs(prev => [...prev, progress.log_message].slice(-50));
+      if (progress.log_message && progress.log_message.trim()) {
+        setEmbeddingLogs(prev => {
+          const newLogs = [...prev, progress.log_message];
+          // 중복 로그 방지
+          const filtered = newLogs.filter((log, index) => 
+            index === 0 || log !== newLogs[index - 1]
+          );
+          return filtered.slice(-100); // 최근 100개 로그만 유지
+        });
+      }
     });
     
     // 정합성 검사 진행 상황 이벤트 리스너
@@ -174,17 +186,20 @@ export default function App() {
   const loadAppData = async () => {
     try {
       setLoading(true);
-      const [statusResult, videosResult, channelsResult, recentResult] = await Promise.all([
+      const [statusResult, videosResult, channelsResult, recentResult, availableChannelsResult] = await Promise.all([
         invoke<AppStatus>('get_app_status'),
         invoke<VideoInfo[]>('list_videos'),
         invoke<ChannelInfo[]>('list_channels'),
-        invoke<RecentVideos>('get_recent_videos_by_channel', { limitPerChannel: 5 })
+        invoke<RecentVideos>('get_recent_videos_by_channel', { limitPerChannel: 5 }),
+        invoke<string[]>('get_available_channels_for_embedding')
       ]);
       
       setAppStatus(statusResult);
       setVideos(videosResult);
       setChannels(channelsResult);
       setRecentVideos(recentResult);
+      setAvailableChannels(availableChannelsResult);
+      setSelectedChannels(availableChannelsResult); // 기본적으로 모든 채널 선택
       setError(null);
     } catch (err) {
       setError(err as string);
@@ -325,21 +340,57 @@ export default function App() {
     }
   };
 
-  // 벡터 임베딩 생성 (진행 상황 포함)
-  const createEmbeddings = async () => {
+  // 채널 선택 토글
+  const toggleChannelSelection = (channel: string) => {
+    setSelectedChannels(prev => 
+      prev.includes(channel) 
+        ? prev.filter(c => c !== channel)
+        : [...prev, channel]
+    );
+  };
+
+  // 모든 채널 선택/해제
+  const toggleAllChannels = () => {
+    setSelectedChannels(prev => 
+      prev.length === availableChannels.length ? [] : [...availableChannels]
+    );
+  };
+
+  // 채널별 벡터 임베딩 생성
+  const createEmbeddingsForChannels = async () => {
+    if (selectedChannels.length === 0) {
+      alert('생성할 채널을 선택해주세요.');
+      return;
+    }
+
     setEmbedLoading(true);
     setEmbeddingProgress(null);
     setEmbeddingLogs([]);
     setShowEmbeddingModal(true);
+    setShowChannelSelector(false);
     
     try {
-      const result = await invoke<string>('create_embeddings_with_progress');
+      const result = await invoke<string>('create_embeddings_for_channels_with_progress', { 
+        channels: selectedChannels 
+      });
       // 완료 후 데이터 새로고침
       await loadAppData();
     } catch (err) {
       setEmbeddingLogs(prev => [...prev, `❌ 임베딩 생성 실패: ${err}`]);
     } finally {
       setEmbedLoading(false);
+    }
+  };
+
+
+
+  // 임베딩 중단
+  const cancelEmbedding = async () => {
+    try {
+      await invoke('cancel_embedding');
+      setEmbeddingLogs(prev => [...prev, '🛑 사용자가 임베딩 생성을 중단했습니다']);
+    } catch (err) {
+      setEmbeddingLogs(prev => [...prev, `❌ 중단 실패: ${err}`]);
     }
   };
 
@@ -424,7 +475,7 @@ export default function App() {
               {downloadLoading ? '📥 다운로드 중...' : '📥 비디오 다운로드'}
             </button>
             <button 
-              onClick={createEmbeddings} 
+              onClick={() => setShowChannelSelector(true)} 
               disabled={embedLoading}
               className={`action-btn secondary ${embedLoading ? 'loading' : ''}`}
             >
@@ -474,11 +525,6 @@ export default function App() {
                           onClick={() => setActiveTab('videos')}
                         >
                           <div className="video-rank">#{index + 1}</div>
-                          <div className="video-thumbnail-small">
-                            <div className="video-duration-small">
-                              {video.duration_seconds ? formatDuration(video.duration_seconds) : video.duration || 'N/A'}
-                            </div>
-                          </div>
                           <div className="video-details">
                             <h4 className="video-title-small">{video.title}</h4>
                             <div className="video-meta-small">
@@ -487,6 +533,9 @@ export default function App() {
                               </span>
                               <span className="upload-date">
                                 📅 {video.upload_date ? new Date(video.upload_date).toLocaleDateString('ko-KR') : 'N/A'}
+                              </span>
+                              <span className="video-duration">
+                                ⏱️ {video.duration_seconds ? formatDuration(video.duration_seconds) : video.duration || 'N/A'}
                               </span>
                             </div>
                           </div>
@@ -505,11 +554,6 @@ export default function App() {
                           className="video-item"
                           onClick={() => setActiveTab('videos')}
                         >
-                          <div className="video-thumbnail-small">
-                            <div className="video-duration-small">
-                              {video.duration_seconds ? formatDuration(video.duration_seconds) : video.duration || 'N/A'}
-                            </div>
-                          </div>
                           <div className="video-details">
                             <h4 className="video-title-small">{video.title}</h4>
                             <div className="video-meta-small">
@@ -518,6 +562,9 @@ export default function App() {
                               </span>
                               <span className="upload-date">
                                 📅 {video.upload_date ? new Date(video.upload_date).toLocaleDateString('ko-KR') : 'N/A'}
+                              </span>
+                              <span className="video-duration">
+                                ⏱️ {video.duration_seconds ? formatDuration(video.duration_seconds) : video.duration || 'N/A'}
                               </span>
                             </div>
                           </div>
@@ -631,19 +678,92 @@ export default function App() {
         </div>
       )}
       
+      {/* 채널 선택 모달 */}
+      {showChannelSelector && (
+        <div className="modal-overlay">
+          <div className="progress-modal">
+            <div className="modal-header">
+              <h3>🧠 채널별 벡터 임베딩 생성</h3>
+              <button 
+                className="modal-close-btn"
+                onClick={() => setShowChannelSelector(false)}
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="channel-selector">
+              <div className="channel-selector-header">
+                <h4>생성할 채널을 선택하세요:</h4>
+                <button 
+                  onClick={toggleAllChannels}
+                  className="toggle-all-btn"
+                >
+                  {selectedChannels.length === availableChannels.length ? '전체 해제' : '전체 선택'}
+                </button>
+              </div>
+              
+              <div className="channel-list">
+                {availableChannels.map(channel => (
+                  <label key={channel} className="channel-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={selectedChannels.includes(channel)}
+                      onChange={() => toggleChannelSelection(channel)}
+                    />
+                    <span className="channel-name">📺 {channel}</span>
+                  </label>
+                ))}
+              </div>
+              
+              <div className="channel-selector-footer">
+                <div className="selected-count">
+                  선택됨: {selectedChannels.length} / {availableChannels.length}
+                </div>
+                <div className="channel-actions">
+                  <button 
+                    onClick={() => setShowChannelSelector(false)}
+                    className="btn-secondary"
+                  >
+                    취소
+                  </button>
+                  <button 
+                    onClick={createEmbeddingsForChannels}
+                    disabled={selectedChannels.length === 0}
+                    className="btn-primary"
+                  >
+                    생성 시작
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 벡터 임베딩 진행 상황 모달 */}
       {showEmbeddingModal && (
         <div className="modal-overlay">
           <div className="progress-modal">
             <div className="modal-header">
               <h3>🧠 벡터 임베딩 생성 진행 상황</h3>
-              <button 
-                className="modal-close-btn"
-                onClick={() => setShowEmbeddingModal(false)}
-                disabled={embedLoading}
-              >
-                ✕
-              </button>
+              <div className="modal-header-actions">
+                {embedLoading && (
+                  <button 
+                    onClick={cancelEmbedding}
+                    className="btn-cancel"
+                  >
+                    🛑 중단
+                  </button>
+                )}
+                <button 
+                  className="modal-close-btn"
+                  onClick={() => setShowEmbeddingModal(false)}
+                  disabled={embedLoading}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
             
             {embeddingProgress && (
@@ -652,6 +772,7 @@ export default function App() {
                   <span>📊 상태: {embeddingProgress.status}</span>
                   <span>📈 진행률: {embeddingProgress.progress.toFixed(1)}%</span>
                   <span>🎯 현재: {embeddingProgress.current_video}</span>
+                  <span>📈 완료: {embeddingProgress.completed_videos}/{embeddingProgress.total_videos}</span>
                 </div>
                 
                 <div className="progress-bar-container">
@@ -659,6 +780,10 @@ export default function App() {
                     className="progress-bar"
                     style={{ width: `${embeddingProgress.progress}%` }}
                   />
+                </div>
+                
+                <div className="current-log">
+                  <strong>현재 작업:</strong> {embeddingProgress.log_message}
                 </div>
               </div>
             )}
