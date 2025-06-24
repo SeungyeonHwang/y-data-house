@@ -127,6 +127,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState('');
+  
+  // 채널별 토글 상태
+  const [collapsedChannels, setCollapsedChannels] = useState<Set<string>>(new Set());
 
   // 초기 데이터 로드
   useEffect(() => {
@@ -421,6 +424,43 @@ export default function App() {
     } catch (err) {
       setDownloadLogs(prev => [...prev, `❌ 중단 실패: ${err}`]);
     }
+  };
+  
+  // 채널 토글 함수
+  const toggleChannelCollapse = (channelName: string) => {
+    setCollapsedChannels(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(channelName)) {
+        newSet.delete(channelName);
+      } else {
+        newSet.add(channelName);
+      }
+      return newSet;
+    });
+  };
+  
+  // 채널별로 비디오 그룹화
+  const groupVideosByChannel = (videos: VideoInfo[]) => {
+    const grouped = videos.reduce((acc, video) => {
+      const channel = video.channel || '알 수 없는 채널';
+      if (!acc[channel]) {
+        acc[channel] = [];
+      }
+      acc[channel].push(video);
+      return acc;
+    }, {} as Record<string, VideoInfo[]>);
+    
+    // 각 채널의 비디오를 날짜순으로 정렬 (최신이 맨 위)
+    Object.keys(grouped).forEach(channel => {
+      grouped[channel].sort((a, b) => {
+        const dateA = a.upload_date ? new Date(a.upload_date).getTime() : 0;
+        const dateB = b.upload_date ? new Date(b.upload_date).getTime() : 0;
+        return dateB - dateA; // 내림차순 (최신이 위)
+      });
+    });
+    
+    // 채널별로 정렬 (비디오 개수 내림차순)
+    return Object.entries(grouped).sort((a, b) => b[1].length - a[1].length);
   };
 
     // 대시보드 렌더링 함수 개선
@@ -983,18 +1023,44 @@ export default function App() {
             
             <div className="video-layout">
               <div className="video-sidebar">
-                <h3 className="sidebar-title">비디오 목록 ({videos.length})</h3>
+                <h3 className="sidebar-title">비디오 목록 ({videos.length}개)</h3>
                 <div className="video-list">
-                  {videos.map((video, index) => (
-                    <div
-                      key={index}
-                      className={`video-item ${selectedVideo === video ? 'video-item-active' : ''}`}
-                      onClick={() => setSelectedVideo(video)}
-                    >
-                      <div className="video-title">{video.title}</div>
-                      <div className="video-channel">{video.channel}</div>
-                      {video.upload_date && (
-                        <div className="video-date">{video.upload_date}</div>
+                  {groupVideosByChannel(videos).map(([channelName, channelVideos]) => (
+                    <div key={channelName} className="channel-group">
+                      <div 
+                        className="channel-group-header"
+                        onClick={() => toggleChannelCollapse(channelName)}
+                      >
+                        <span className="channel-toggle-icon">
+                          {collapsedChannels.has(channelName) ? '▶️' : '🔽'}
+                        </span>
+                        <span className="channel-group-name">📺 {channelName}</span>
+                        <span className="channel-video-count">({channelVideos.length}개)</span>
+                      </div>
+                      
+                      {!collapsedChannels.has(channelName) && (
+                        <div className="channel-videos">
+                          {channelVideos.map((video, index) => (
+                            <div
+                              key={`${channelName}-${index}`}
+                              className={`video-item ${selectedVideo === video ? 'video-item-active' : ''}`}
+                              onClick={() => setSelectedVideo(video)}
+                            >
+                              {video.upload_date && (
+                                <div className="video-date-small">📅 {video.upload_date}</div>
+                              )}
+                              <div className="video-title">{video.title}</div>
+                              <div className="video-meta-row">
+                                {video.duration && (
+                                  <div className="video-duration">⏱️ {video.duration}</div>
+                                )}
+                                {video.view_count && (
+                                  <div className="video-views">👁️ {video.view_count.toLocaleString()}</div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
                   ))}

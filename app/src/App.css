@@ -607,43 +607,142 @@ html, body {
 }
 
 .channel-group {
+  margin-bottom: 16px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #161b22;
+  overflow: hidden;
+}
+
+.channel-group-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background: #21262d;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-bottom: 1px solid #30363d;
+  user-select: none;
+}
+
+.channel-group-header:hover {
+  background: #30363d;
+}
+
+.channel-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 8px;
+  font-size: 12px;
+  transition: transform 0.2s ease;
+}
+
+.channel-group-name {
+  flex: 1;
+  font-weight: 600;
+  color: #f0f6fc;
+  font-size: 14px;
+}
+
+.channel-video-count {
+  color: #8b949e;
+  font-size: 12px;
+  font-weight: 500;
+  background: #0d1117;
+  padding: 4px 8px;
+  border-radius: 12px;
+  border: 1px solid #30363d;
+}
+
+.channel-videos {
+  max-height: 900px;
+  overflow-y: auto;
+}
+
+.channel-videos .video-item {
+  border-left: 3px solid transparent;
+  margin-left: 12px;
+  margin-right: 12px;
+  margin-bottom: 12px;
   background: #0d1117;
   border: 1px solid #21262d;
   border-radius: 8px;
-  padding: 16px;
-}
-
-.channel-group-title {
-  color: #58a6ff;
-  margin: 0 0 12px 0;
-  font-size: 16px;
-  font-weight: 600;
-  border-bottom: 1px solid #21262d;
-  padding-bottom: 8px;
-}
-
-.video-list .video-item {
-  background: #161b22;
-  border: 1px solid #21262d;
-  border-radius: 6px;
-  padding: 12px;
-  cursor: pointer;
   transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  position: relative;
 }
 
-.video-list .video-item:last-child {
-  border-bottom: 1px solid #21262d;
+.channel-videos .video-item:hover {
+  border-left-color: #58a6ff;
+  border-color: #30363d;
+  background: #161b22;
+  transform: translateX(2px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-.video-list .video-item:hover {
+.channel-videos .video-item.video-item-active {
+  border-left-color: #238636;
+  background: #161b22;
+  box-shadow: 0 0 0 1px rgba(35, 134, 54, 0.3);
+}
+
+.channel-videos .video-item:last-child {
+  margin-bottom: 12px;
+}
+
+/* 스크롤바 스타일 개선 */
+.channel-videos::-webkit-scrollbar {
+  width: 6px;
+}
+
+.channel-videos::-webkit-scrollbar-track {
   background: #21262d;
-  border-color: #58a6ff;
+  border-radius: 3px;
+}
+
+.channel-videos::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+
+.channel-videos::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  .channel-group-header {
+    padding: 10px 12px;
+  }
+  
+  .channel-group-name {
+    font-size: 13px;
+  }
+  
+  .channel-video-count {
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+  
+  .channel-videos {
+    max-height: 300px;
+  }
+  
+  .channel-videos .video-item {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
 }
 
 .video-title {
   color: #f0f6fc;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   margin-bottom: 8px;
   line-height: 1.4;
   display: -webkit-box;
@@ -665,12 +764,51 @@ html, body {
   gap: 4px;
 }
 
+.video-date-small {
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  opacity: 0.9;
+  line-height: 1.2;
+  background: rgba(139, 148, 158, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+.video-meta-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
 .video-duration {
   color: #8b949e;
-  font-size: 12px;
+  font-size: 11px;
   display: flex;
   align-items: center;
   gap: 4px;
+  font-weight: 500;
+  background: rgba(139, 148, 158, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.video-views {
+  color: #7c3aed;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+  background: rgba(124, 58, 237, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  align-self: flex-start;
 }
 
 .video-channel {
@@ -1413,8 +1551,6 @@ html, body {
   overflow: hidden;
 }
 
-
-
 .logs-container {
   background: #0d1117;
   border: 1px solid #21262d;
@@ -1512,7 +1648,6 @@ html, body {
 }
 
 /* 채널 선택 UI */
-
 .channel-selector {
   padding: 20px;
   background: #0d1117;
