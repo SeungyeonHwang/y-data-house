@@ -985,7 +985,6 @@ async fn create_embeddings_for_channels_with_progress(
     }
     
     let total_channels = channels.len() as u32;
-    let mut completed_channels = 0u32;
     let mut all_output = Vec::new();
     
     // 시작 진행 상황
@@ -1013,7 +1012,7 @@ async fn create_embeddings_for_channels_with_progress(
     let _ = window.emit("embedding-progress", &processing_progress);
     
     // Python 스크립트 실행 (선택된 모든 채널을 한 번에 처리)
-    let mut cmd = Command::new(&venv_python)
+    let cmd = Command::new(&venv_python)
         .arg(&embed_script)
         .arg("channels")  // 특정 채널 모드
         .args(&channels)  // 선택된 채널들
@@ -1141,10 +1140,8 @@ async fn create_embeddings_for_channels_with_progress(
         *process_guard = None;
     }
     
-    completed_channels = total_channels;
-    
     if state.is_cancelled.load(Ordering::Relaxed) {
-        return Ok(format!("임베딩 생성이 중단되었습니다. {}개 채널 완료", completed_channels));
+        return Ok(format!("임베딩 생성이 중단되었습니다. {}개 채널 완료", total_channels));
     }
     
     // 최종 완료
@@ -1154,7 +1151,7 @@ async fn create_embeddings_for_channels_with_progress(
         progress: 100.0,
         current_video: "모든 채널 임베딩 완료".to_string(),
         total_videos: total_channels,
-        completed_videos: completed_channels,
+        completed_videos: total_channels,
         log_message: format!("🎉 {}개 채널의 벡터 임베딩 생성이 완료되었습니다!", total_channels),
     };
     let _ = window.emit("embedding-progress", &final_progress);

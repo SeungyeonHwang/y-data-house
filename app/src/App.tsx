@@ -925,30 +925,39 @@ export default function App() {
             </div>
 
             <div className="channel-list">
-              {channels.map((channel, index) => (
-                <div key={index} className="channel-item">
-                  <div className="channel-info">
-                    <div className="channel-name">
-                      {channel.enabled ? '✅' : '❌'} {channel.name}
+              {channels.length > 0 ? (
+                channels.map((channel, index) => (
+                  <div key={index} className="channel-item">
+                    <div className="channel-info">
+                      <div className="channel-name">
+                        {channel.enabled ? '✅' : '❌'} {channel.name}
+                      </div>
+                      <div className="channel-url">{channel.url}</div>
                     </div>
-                    <div className="channel-url">{channel.url}</div>
+                    <div className="channel-actions">
+                      <button 
+                        onClick={() => toggleChannel(channel.url)}
+                        className="channel-toggle-button"
+                      >
+                        {channel.enabled ? '⏸️ 비활성화' : '▶️ 활성화'}
+                      </button>
+                      <button 
+                        onClick={() => removeChannel(channel.url)}
+                        className="channel-remove-button"
+                      >
+                        🗑️ 삭제
+                      </button>
+                    </div>
                   </div>
-                  <div className="channel-actions">
-                    <button 
-                      onClick={() => toggleChannel(channel.url)}
-                      className="channel-toggle-button"
-                    >
-                      {channel.enabled ? '⏸️ 비활성화' : '▶️ 활성화'}
-                    </button>
-                    <button 
-                      onClick={() => removeChannel(channel.url)}
-                      className="channel-remove-button"
-                    >
-                      🗑️ 삭제
-                    </button>
-                  </div>
+                ))
+              ) : (
+                <div className="no-channels">
+                  <div className="no-selection-icon">📺</div>
+                  <h3>등록된 채널이 없습니다</h3>
+                  <p>위에서 YouTube 채널 URL을 입력하여 채널을 추가하세요</p>
+                  <p className="example-text">예: https://www.youtube.com/@채널명</p>
                 </div>
-              ))}
+              )}
             </div>
           </div>
         )}

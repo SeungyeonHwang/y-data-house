@@ -692,7 +692,7 @@ html, body {
   margin-bottom: 24px;
   display: flex;
   gap: 12px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .channel-input {
@@ -729,6 +729,13 @@ html, body {
 }
 
 .channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 채널 관리 탭의 채널 목록 */
+.tab-content .channel-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -794,6 +801,79 @@ html, body {
 .channel-remove-button:hover {
   background: rgba(248, 81, 73, 0.1);
   border-color: #f85149;
+}
+
+/* 채널 관리 반응형 */
+@media (max-width: 768px) {
+  .channel-add-section {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .add-channel-button {
+    margin-top: 8px;
+  }
+  
+  .channel-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .channel-actions {
+    align-self: stretch;
+    justify-content: space-between;
+  }
+  
+  .channel-toggle-button,
+  .channel-remove-button {
+    flex: 1;
+    text-align: center;
+  }
+}
+
+/* 빈 채널 목록 상태 */
+.no-channels {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: #8b949e;
+  text-align: center;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  border-style: dashed;
+}
+
+.no-channels .no-selection-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.7;
+}
+
+.no-channels h3 {
+  color: #f0f6fc;
+  font-size: 18px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.no-channels p {
+  margin-bottom: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.no-channels .example-text {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  background: #0d1117;
+  color: #58a6ff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-top: 8px;
 }
 
 /* 비디오 레이아웃 */
@@ -1431,9 +1511,9 @@ html, body {
   border-color: #58a6ff;
 }
 
-.channel-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+.channel-selector .channel-list {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   margin-bottom: 20px;
   max-height: 300px;
