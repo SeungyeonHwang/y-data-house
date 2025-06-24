@@ -115,8 +115,48 @@ html, body {
   display: flex;
   gap: 15px;
   justify-content: center;
+  align-items: center;
   flex-wrap: wrap;
   margin-top: 20px;
+}
+
+/* 품질 선택기 */
+.quality-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.quality-selector label {
+  color: #f0f6fc;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.quality-select {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #f0f6fc;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+  cursor: pointer;
+}
+
+.quality-select:focus {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.1);
+}
+
+.quality-select option {
+  background: #161b22;
+  color: #f0f6fc;
 }
 
 .action-btn {

@@ -106,6 +106,7 @@ export default function App() {
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [downloadLogs, setDownloadLogs] = useState<string[]>([]);
   const [showProgressModal, setShowProgressModal] = useState(false);
+  const [videoQuality, setVideoQuality] = useState<string>('720p');
   
   // 벡터 임베딩 상태
   const [embedLoading, setEmbedLoading] = useState(false);
@@ -330,7 +331,7 @@ export default function App() {
     setShowProgressModal(true);
     
     try {
-      const result = await invoke<string>('download_videos_with_progress');
+      const result = await invoke<string>('download_videos_with_progress_and_quality', { quality: videoQuality });
       // 완료 후 데이터 새로고침
       await loadAppData();
     } catch (err) {
@@ -467,6 +468,20 @@ export default function App() {
           </div>
           
           <div className="dashboard-actions">
+            <div className="quality-selector">
+              <label htmlFor="quality-select">🎬 화질 선택:</label>
+              <select 
+                id="quality-select"
+                value={videoQuality} 
+                onChange={(e) => setVideoQuality(e.target.value)}
+                className="quality-select"
+              >
+                <option value="480p">480p (낮음)</option>
+                <option value="720p">720p (중간)</option>
+                <option value="1080p">1080p (높음)</option>
+                <option value="best">최고 품질</option>
+              </select>
+            </div>
             <button 
               onClick={downloadVideos} 
               disabled={downloadLoading}
