@@ -5,6 +5,8 @@ Click-based CLI interface.
 import logging
 import sys
 import time
+import subprocess
+import json
 from pathlib import Path
 from typing import Optional, List
 
@@ -631,6 +633,335 @@ def config_validate():
         click.echo("⚠️  일부 문제가 있지만 대체로 양호합니다.")
     else:
         click.echo("❌ 심각한 데이터 정합성 문제가 발견되었습니다.")
+
+
+@main.command()
+@click.argument('video_path', type=click.Path(exists=True))
+@click.option('--quality', default='720p', type=click.Choice(['480p', '720p', '1080p', 'keep']),
+              help='변환할 화질 (기본: 720p)')
+@click.option('--codec', default='h264', type=click.Choice(['h264', 'h265']),
+              help='변환할 코덱 (기본: h264)')
+@click.option('--backup/--no-backup', default=True, help='원본 파일 백업 여부')
+@click.option('--progress/--no-progress', default=True, help='진행률 표시 여부')
+@click.option('--force', is_flag=True, help='코덱 확인 없이 강제 변환')
+def convert_single(video_path: str, quality: str, codec: str, backup: bool, progress: bool, force: bool) -> None:
+    """단일 비디오 파일을 AV1에서 H.264/H.265로 변환합니다."""
+    video_file = Path(video_path)
+    
+    if not video_file.exists():
+        logger.error(f"비디오 파일을 찾을 수 없습니다: {video_file}")
+        sys.exit(1)
+    
+    # 코덱 확인 (강제 모드가 아닌 경우)
+    if not force:
+        try:
+            codec_info = _get_video_codec(video_file)
+            logger.info(f"현재 코덱: {codec_info}")
+            
+            if 'av01' not in codec_info.lower() and 'av1' not in codec_info.lower():
+                logger.info("AV1 코덱이 아닙니다. 변환을 건너뜁니다.")
+                logger.info("강제 변환하려면 --force 옵션을 사용하세요.")
+                return
+                
+        except Exception as e:
+            logger.warning(f"코덱 확인 실패: {e}")
+            logger.info("코덱 확인에 실패했지만 변환을 계속 진행합니다.")
+    
+    # 변환 수행
+    logger.info(f"🔄 비디오 변환 시작: {video_file.name}")
+    logger.info(f"📊 설정: {quality} 화질, {codec} 코덱")
+    
+    try:
+        success = _convert_video_file(video_file, quality, codec, backup, progress)
+        if success:
+            logger.info("✅ 변환 완료!")
+        else:
+            logger.error("❌ 변환 실패")
+            sys.exit(1)
+    except Exception as e:
+        logger.error(f"변환 중 오류 발생: {e}")
+        sys.exit(1)
+
+
+@main.command()
+def test_ffmpeg() -> None:
+    """FFmpeg 설치 및 기본 기능을 테스트합니다."""
+    logger.info("🔧 FFmpeg 테스트 시작")
+    
+    # FFmpeg 설치 확인
+    if not _check_ffmpeg_installation():
+        sys.exit(1)
+    
+    # 지원되는 인코더 확인
+    try:
+        result = subprocess.run(['ffmpeg', '-encoders'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            encoders = result.stdout
+            h264_found = 'libx264' in encoders
+            h265_found = 'libx265' in encoders
+            
+            logger.info(f"✅ H.264 인코더 (libx264): {'지원됨' if h264_found else '지원되지 않음'}")
+            logger.info(f"✅ H.265 인코더 (libx265): {'지원됨' if h265_found else '지원되지 않음'}")
+            
+            if not h264_found:
+                logger.warning("⚠️ libx264 인코더가 없습니다. FFmpeg를 다시 설치해보세요.")
+        else:
+            logger.error("❌ FFmpeg 인코더 목록 조회 실패")
+    except Exception as e:
+        logger.error(f"❌ FFmpeg 인코더 확인 중 오류: {e}")
+    
+    logger.info("✅ FFmpeg 테스트 완료")
+
+
+def _get_video_codec(video_file: Path) -> str:
+    """FFprobe를 사용하여 비디오 코덱 정보를 가져옵니다."""
+    cmd = [
+        'ffprobe', '-v', 'quiet', '-print_format', 'json',
+        '-show_streams', '-select_streams', 'v:0', str(video_file)
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Exception(f"FFprobe 실행 실패: {result.stderr}")
+    
+    data = json.loads(result.stdout)
+    if not data.get('streams'):
+        raise Exception("비디오 스트림을 찾을 수 없습니다")
+    
+    codec_name = data['streams'][0].get('codec_name', 'unknown')
+    return codec_name
+
+
+def _detect_hardware_acceleration() -> str:
+    """사용 가능한 하드웨어 가속을 감지합니다."""
+    try:
+        result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return 'software'
+            
+        encoders = result.stdout
+        
+        # macOS에서는 VideoToolbox 하드웨어 가속 확인
+        if 'h264_videotoolbox' in encoders:
+            return 'videotoolbox'
+        # Intel Quick Sync Video 확인
+        elif 'h264_qsv' in encoders:
+            return 'qsv'
+        # Linux VAAPI 확인  
+        elif 'h264_vaapi' in encoders:
+            return 'vaapi'
+        else:
+            return 'software'
+    except Exception as e:
+        logger.debug(f"하드웨어 가속 감지 실패: {e}")
+        return 'software'
+
+
+def _check_ffmpeg_installation() -> bool:
+    """FFmpeg 설치 여부를 확인합니다."""
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            version_line = result.stdout.split('\n')[0]
+            logger.info(f"✅ FFmpeg 발견: {version_line}")
+            return True
+        else:
+            logger.error("❌ FFmpeg 실행 실패")
+            return False
+    except FileNotFoundError:
+        logger.error("❌ FFmpeg를 찾을 수 없습니다. FFmpeg를 설치해주세요.")
+        logger.error("설치 방법:")
+        logger.error("  macOS: brew install ffmpeg")
+        logger.error("  Ubuntu: sudo apt install ffmpeg")
+        logger.error("  Windows: https://ffmpeg.org/download.html")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("❌ FFmpeg 버전 확인 시간 초과")
+        return False
+    except Exception as e:
+        logger.error(f"❌ FFmpeg 확인 중 오류: {e}")
+        return False
+
+
+def _convert_video_file(video_file: Path, quality: str, codec: str, backup: bool, progress: bool) -> bool:
+    """실제 비디오 변환을 수행합니다."""
+    output_file = video_file.with_suffix('.converted.mp4')
+    backup_file = video_file.with_suffix('.av1.backup') if backup else None
+    
+    # FFmpeg 설치 확인
+    if not _check_ffmpeg_installation():
+        return False
+    
+    try:
+        # 하드웨어 가속 감지
+        hw_accel = _detect_hardware_acceleration()
+        logger.info(f"🚀 하드웨어 가속: {hw_accel}")
+        
+        # FFmpeg 명령어 구성
+        cmd = ['ffmpeg', '-y', '-i', str(video_file)]
+        
+        # 비디오 코덱 설정
+        if codec == 'h264':
+            if hw_accel == 'videotoolbox':
+                cmd.extend(['-c:v', 'h264_videotoolbox'])
+                cmd.extend(['-b:v', '2M'])  # VideoToolbox는 bitrate 사용
+            elif hw_accel == 'qsv':
+                cmd.extend(['-c:v', 'h264_qsv'])
+                cmd.extend(['-q', '23'])
+            elif hw_accel == 'vaapi':
+                cmd.extend(['-vaapi_device', '/dev/dri/renderD128'])
+                cmd.extend(['-c:v', 'h264_vaapi'])
+                cmd.extend(['-qp', '23'])
+            else:
+                cmd.extend(['-c:v', 'libx264'])
+                cmd.extend(['-crf', '23'])
+                cmd.extend(['-preset', 'medium'])
+        elif codec == 'h265':
+            if hw_accel == 'videotoolbox':
+                cmd.extend(['-c:v', 'hevc_videotoolbox'])
+                cmd.extend(['-b:v', '2M'])
+            elif hw_accel == 'qsv':
+                cmd.extend(['-c:v', 'hevc_qsv'])
+                cmd.extend(['-q', '23'])
+            elif hw_accel == 'vaapi':
+                cmd.extend(['-vaapi_device', '/dev/dri/renderD128'])
+                cmd.extend(['-c:v', 'hevc_vaapi'])
+                cmd.extend(['-qp', '23'])
+            else:
+                cmd.extend(['-c:v', 'libx265'])
+                cmd.extend(['-crf', '23'])
+                cmd.extend(['-preset', 'medium'])
+        
+        # 화질 설정
+        if quality == '480p':
+            cmd.extend(['-vf', 'scale=854:480'])
+        elif quality == '720p':
+            cmd.extend(['-vf', 'scale=1280:720'])
+        elif quality == '1080p':
+            cmd.extend(['-vf', 'scale=1920:1080'])
+        # 'keep'이면 해상도 변경 없음
+        
+        # 오디오 복사 (재인코딩 없음)
+        cmd.extend(['-c:a', 'copy'])
+        
+        # 호환성을 위한 픽셀 포맷
+        cmd.extend(['-pix_fmt', 'yuv420p'])
+        
+        cmd.append(str(output_file))
+        
+        logger.info(f"🔧 실행 명령어: {' '.join(cmd)}")
+        
+        # 변환 실행
+        if progress:
+            # 진행률 표시와 함께 실행
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, 
+                                     stderr=subprocess.PIPE, text=True)
+            
+            stderr_output = []
+            while True:
+                output = process.stderr.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    stderr_output.append(output.strip())
+                    if 'time=' in output or 'frame=' in output:
+                        # 간단한 진행률 표시
+                        if 'time=' in output:
+                            time_part = output.split('time=')[1].split(' ')[0]
+                            logger.info(f"⏱️  변환 진행: {time_part}")
+                    elif 'error' in output.lower() or 'failed' in output.lower():
+                        logger.error(f"FFmpeg 에러: {output.strip()}")
+            
+            rc = process.poll()
+            
+            if rc != 0:
+                logger.error("FFmpeg 변환 실패")
+                logger.error("FFmpeg stderr 출력:")
+                for line in stderr_output[-10:]:  # 마지막 10줄만 표시
+                    logger.error(f"  {line}")
+                return False
+        else:
+            # 진행률 없이 실행
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            rc = result.returncode
+            
+            if rc != 0:
+                logger.error("FFmpeg 변환 실패")
+                logger.error(f"FFmpeg stdout: {result.stdout}")
+                logger.error(f"FFmpeg stderr: {result.stderr}")
+                return False
+        
+        # 변환 성공 시 파일 교체
+        if backup and backup_file:
+            video_file.rename(backup_file)
+            logger.info(f"💾 원본 백업: {backup_file.name}")
+        else:
+            video_file.unlink()
+            logger.info("🗑️ 원본 파일 삭제")
+        
+        output_file.rename(video_file)
+        logger.info(f"✅ 변환 완료: {video_file.name}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"변환 중 오류: {e}")
+        # 정리
+        if output_file.exists():
+            output_file.unlink()
+        return False
+
+
+@main.command()
+def cleanup_backups() -> None:
+    """Vault에서 AV1 백업 파일들을 정리하여 디스크 공간을 절약합니다."""
+    vault_path = settings.vault_root / "10_videos"
+    
+    if not vault_path.exists():
+        logger.error(f"Vault 경로를 찾을 수 없습니다: {vault_path}")
+        return
+    
+    backup_files = []
+    total_size = 0
+    
+    # 백업 파일 검색
+    for backup_file in vault_path.rglob("*.av1.backup"):
+        size = backup_file.stat().st_size
+        backup_files.append((backup_file, size))
+        total_size += size
+    
+    if not backup_files:
+        logger.info("✅ 정리할 백업 파일이 없습니다.")
+        return
+    
+    # 발견된 백업 파일 정보 표시
+    logger.info(f"🔍 발견된 백업 파일: {len(backup_files)}개")
+    logger.info(f"💾 총 크기: {total_size / (1024*1024):.1f} MB")
+    
+    # 사용자 확인
+    if not click.confirm(f"\n{len(backup_files)}개의 백업 파일 ({total_size / (1024*1024):.1f} MB)을 삭제하시겠습니까?"):
+        logger.info("❌ 작업이 취소되었습니다.")
+        return
+    
+    # 백업 파일 삭제
+    deleted_count = 0
+    freed_space = 0
+    
+    for backup_file, size in backup_files:
+        try:
+            backup_file.unlink()
+            deleted_count += 1
+            freed_space += size
+            logger.info(f"🗑️  삭제: {backup_file.name} ({size / (1024*1024):.1f} MB)")
+        except Exception as e:
+            logger.error(f"❌ 삭제 실패: {backup_file.name} - {e}")
+    
+    logger.info(f"✅ 정리 완료!")
+    logger.info(f"📁 삭제된 파일: {deleted_count}개")
+    logger.info(f"💾 확보된 공간: {freed_space / (1024*1024):.1f} MB")
 
 
 if __name__ == '__main__':

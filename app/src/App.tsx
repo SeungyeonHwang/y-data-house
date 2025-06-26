@@ -108,6 +108,12 @@ export default function App() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const [codecInfo, setCodecInfo] = useState<string | null>(null);
   
+  // 비디오 변환 상태
+  const [conversionLoading, setConversionLoading] = useState(false);
+  const [conversionProgress, setConversionProgress] = useState<DownloadProgress | null>(null);
+  const [conversionLogs, setConversionLogs] = useState<string[]>([]);
+  const [showConversionModal, setShowConversionModal] = useState(false);
+  
   // 작업 상태
   const [downloadLoading, setDownloadLoading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
@@ -226,10 +232,44 @@ export default function App() {
       setIntegrityLogs(prev => [...prev, progress.log_message].slice(-50));
     });
     
+    // 비디오 변환 진행 상황 이벤트 리스너
+    const unlistenConversion = listen<DownloadProgress>('conversion-progress', (event) => {
+      const progress = event.payload;
+      setConversionProgress(progress);
+      if (progress.log_message && progress.log_message.trim()) {
+        setConversionLogs(prev => {
+          const newLogs = [...prev, progress.log_message];
+          const filtered = newLogs.filter((log, index) => 
+            index === 0 || log !== newLogs[index - 1]
+          );
+          return filtered.slice(-100);
+        });
+      }
+      
+      // 변환 완료 시 비디오 URL 새로고침
+      if (progress.status === "완료" && progress.progress === 100.0) {
+        setTimeout(async () => {
+          try {
+            if (selectedVideo && videoServerPort) {
+              const url = await invoke<string>('get_video_url', { videoPath: selectedVideo.video_path });
+              setVideoUrl(url);
+              setVideoError(null); // 에러 초기화
+              setCodecInfo('MP4 컨테이너 (H.264 코덱)'); // 변환 완료 후 코덱 정보 업데이트
+              setConversionLogs(prev => [...prev, '🎬 변환된 비디오로 자동 업데이트되었습니다']);
+            }
+          } catch (error) {
+            console.error('변환 후 비디오 URL 새로고침 실패:', error);
+            setConversionLogs(prev => [...prev, `⚠️ 비디오 URL 새로고침 실패: ${error}`]);
+          }
+        }, 1000); // 1초 후 새로고침
+      }
+    });
+    
     return () => {
       unlistenDownload.then(f => f());
       unlistenEmbedding.then(f => f());
       unlistenIntegrity.then(f => f());
+      unlistenConversion.then(f => f());
     };
   }, []);
 
@@ -381,6 +421,41 @@ export default function App() {
     } catch (error) {
       console.error('시스템 플레이어 실행 실패:', error);
       alert('시스템 플레이어로 열기에 실패했습니다. 파일을 직접 열어보세요.');
+    }
+  };
+
+  // 비디오 변환 함수
+  const convertVideo = async (quality: string = '720p', codec: string = 'h264', backup: boolean = false) => {
+    if (!selectedVideo) return;
+    
+    setConversionLoading(true);
+    setConversionProgress(null);
+    setConversionLogs([]);
+    setShowConversionModal(true);
+    
+    try {
+      const result = await invoke<string>('convert_video_file', {
+        videoPath: selectedVideo.video_path,
+        quality,
+        codec,
+        backup
+      });
+      console.log('변환 시작:', result);
+    } catch (error) {
+      console.error('비디오 변환 실패:', error);
+      setConversionLogs(prev => [...prev, `❌ 변환 실패: ${error}`]);
+    } finally {
+      setConversionLoading(false);
+    }
+  };
+
+  // 변환 중단
+  const cancelConversion = async () => {
+    try {
+      await invoke('cancel_conversion');
+      setConversionLogs(prev => [...prev, '🛑 사용자가 변환을 중단했습니다']);
+    } catch (error) {
+      setConversionLogs(prev => [...prev, `❌ 중단 실패: ${error}`]);
     }
   };
 
@@ -1063,6 +1138,83 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* 비디오 변환 진행 상황 모달 */}
+      {showConversionModal && (
+        <div className="modal-overlay">
+          <div className="progress-modal">
+            <div className="modal-header">
+              <h3>🔄 비디오 변환 진행 상황</h3>
+              <div className="modal-header-actions">
+                {conversionLoading && (
+                  <button 
+                    onClick={cancelConversion}
+                    className="btn-cancel"
+                  >
+                    🛑 중단
+                  </button>
+                )}
+                <button 
+                  className="modal-close-btn"
+                  onClick={() => setShowConversionModal(false)}
+                  disabled={conversionLoading}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            
+            {conversionProgress && (
+              <div className="progress-info">
+                <div className="progress-stats">
+                  <span>📊 상태: {conversionProgress.status}</span>
+                  <span>📈 진행률: {conversionProgress.progress > 0 ? conversionProgress.progress.toFixed(1) + '%' : '진행 중...'}</span>
+                  <span>🎯 파일: {selectedVideo?.title || conversionProgress.current_video}</span>
+                </div>
+                
+                {conversionProgress.progress > 0 && (
+                  <div className="progress-bar-container">
+                    <div 
+                      className="progress-bar"
+                      style={{ width: `${conversionProgress.progress}%` }}
+                    />
+                  </div>
+                )}
+                
+                <div className="current-log">
+                  <strong>현재 작업:</strong> {conversionProgress.log_message}
+                </div>
+              </div>
+            )}
+            
+            <div className="logs-container">
+              <h4>📋 실시간 로그</h4>
+              <div className="logs-content">
+                {conversionLogs.map((log, index) => (
+                  <div key={index} className="log-line">
+                    {log}
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div className="modal-footer">
+              {conversionLoading ? (
+                <button className="btn-secondary" disabled>
+                  ⏳ 변환 중...
+                </button>
+              ) : (
+                <button 
+                  className="btn-primary"
+                  onClick={() => setShowConversionModal(false)}
+                >
+                  ✅ 완료
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       
       <div className="container">
       <header className="header">
@@ -1246,12 +1398,21 @@ export default function App() {
                                      </ul>
                                    </div>
                                  ) : null}
-                                 <button 
-                                   onClick={openInSystemPlayer}
-                                   style={styles.systemPlayerButton}
-                                 >
-                                   🎬 시스템 플레이어로 열기
-                                 </button>
+                                 <div style={styles.errorButtonGroup}>
+                                   <button 
+                                     onClick={openInSystemPlayer}
+                                     style={styles.systemPlayerButton}
+                                   >
+                                     🎬 시스템 플레이어로 열기
+                                   </button>
+                                   <button 
+                                     onClick={() => convertVideo()}
+                                     disabled={conversionLoading}
+                                     style={{...styles.systemPlayerButton, backgroundColor: '#ff6b47'}}
+                                   >
+                                     {conversionLoading ? '🔄 변환 중...' : '🔄 H.264로 변환'}
+                                   </button>
+                                 </div>
                                </div>
                              </div>
                            </div>
@@ -2137,5 +2298,12 @@ const styles = {
     fontWeight: 600,
     cursor: 'pointer',
     transition: 'background-color 0.2s ease',
+  },
+  
+  errorButtonGroup: {
+    display: 'flex',
+    gap: '8px',
+    flexWrap: 'wrap' as const,
+    alignItems: 'center',
   },
 };

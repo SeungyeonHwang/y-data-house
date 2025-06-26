@@ -94,6 +94,13 @@ struct DownloadState {
     current_process: Arc<Mutex<Option<std::process::Child>>>,
 }
 
+// 비디오 변환을 위한 상태 관리
+#[derive(Default, Clone)]
+struct ConversionState {
+    is_converting: Arc<AtomicBool>,
+    current_process: Arc<Mutex<Option<std::process::Child>>>,
+}
+
 // Range 지원 HTTP 서버 상태 관리
 #[derive(Default)]
 struct VideoServerState {
@@ -2116,11 +2123,211 @@ async fn open_in_system_player(video_path: String) -> Result<(), String> {
     Ok(())
 }
 
+// 비디오 변환 관련 함수들
+
+#[command]
+async fn convert_video_file(
+    window: Window,
+    video_path: String, 
+    quality: String,
+    codec: String,
+    backup: bool,
+    state: State<'_, ConversionState>
+) -> Result<String, String> {
+    // 이미 변환 중인지 확인
+    if state.is_converting.load(Ordering::Relaxed) {
+        return Err("이미 변환이 진행 중입니다".to_string());
+    }
+    
+    let project_root = get_project_root();
+    let video_full_path = project_root.join(&video_path);
+    
+    if !video_full_path.exists() {
+        return Err(format!("비디오 파일을 찾을 수 없습니다: {}", video_full_path.display()));
+    }
+    
+    // 변환 시작
+    state.is_converting.store(true, Ordering::Relaxed);
+    
+    // Python 가상환경 경로 찾기
+    let venv_path = project_root.join("venv");
+    let python_path = if venv_path.exists() {
+        #[cfg(target_os = "windows")]
+        {
+            venv_path.join("Scripts").join("python.exe")
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            venv_path.join("bin").join("python")
+        }
+    } else {
+        PathBuf::from("python")
+    };
+    
+    // ydh convert-single 명령어 구성
+    let mut cmd = Command::new(&python_path);
+    cmd.arg("-m")
+       .arg("ydh")
+       .arg("convert-single")
+       .arg(&video_full_path)
+       .arg("--quality")
+       .arg(&quality)
+       .arg("--codec")
+       .arg(&codec);
+    
+    if backup {
+        cmd.arg("--backup");
+    } else {
+        cmd.arg("--no-backup");
+    }
+    
+    cmd.current_dir(&project_root)
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+    
+    // 명령어 실행
+    let mut child = cmd.spawn().map_err(|e| {
+        state.is_converting.store(false, Ordering::Relaxed);
+        format!("Python 프로세스 시작 실패: {}", e)
+    })?;
+    
+    // 프로세스 저장
+    {
+        let mut process_guard = state.current_process.lock().unwrap();
+        *process_guard = Some(child);
+    }
+    
+    // 별도 스레드에서 출력 모니터링
+    let window_clone = window.clone();
+    let state_clone = state.inner().clone();
+    let video_path_clone = video_path.clone();
+    
+    tokio::spawn(async move {
+        let mut child = {
+            let mut process_guard = state_clone.current_process.lock().unwrap();
+            process_guard.take()
+        }.unwrap();
+        
+        // stderr에서 출력 읽기 (FFmpeg 출력)
+        if let Some(stderr) = child.stderr.take() {
+            let reader = BufReader::new(stderr);
+            
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    // 변환 진행 상황 파싱
+                    let progress = parse_conversion_progress(&line);
+                    
+                    let conversion_progress = DownloadProgress {
+                        channel: "변환".to_string(),
+                        status: "변환 중".to_string(),
+                        progress,
+                        current_video: video_path_clone.clone(),
+                        total_videos: 1,
+                        completed_videos: 0,
+                        log_message: line,
+                    };
+                    
+                    let _ = window_clone.emit("conversion-progress", &conversion_progress);
+                }
+                
+                // 변환 중단 확인
+                if state_clone.is_converting.load(Ordering::Relaxed) == false {
+                    let _ = child.kill();
+                    break;
+                }
+            }
+        }
+        
+        // 프로세스 완료 대기
+        let result = child.wait();
+        
+        let final_progress = match result {
+            Ok(status) if status.success() => {
+                DownloadProgress {
+                    channel: "변환".to_string(),
+                    status: "완료".to_string(),
+                    progress: 100.0,
+                    current_video: video_path_clone.clone(),
+                    total_videos: 1,
+                    completed_videos: 1,
+                    log_message: "✅ 비디오 변환 완료!".to_string(),
+                }
+            },
+            _ => {
+                DownloadProgress {
+                    channel: "변환".to_string(),
+                    status: "실패".to_string(),
+                    progress: 0.0,
+                    current_video: video_path_clone.clone(),
+                    total_videos: 1,
+                    completed_videos: 0,
+                    log_message: "❌ 비디오 변환 실패".to_string(),
+                }
+            }
+        };
+        
+        let _ = window_clone.emit("conversion-progress", &final_progress);
+        
+        // 변환 상태 초기화
+        state_clone.is_converting.store(false, Ordering::Relaxed);
+    });
+    
+    Ok("비디오 변환이 시작되었습니다".to_string())
+}
+
+#[command]
+async fn cancel_conversion(state: State<'_, ConversionState>) -> Result<(), String> {
+    state.is_converting.store(false, Ordering::Relaxed);
+    
+    if let Ok(mut process_guard) = state.current_process.lock() {
+        if let Some(mut child) = process_guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    
+    Ok(())
+}
+
+#[command]
+async fn get_conversion_status(state: State<'_, ConversionState>) -> Result<bool, String> {
+    Ok(state.is_converting.load(Ordering::Relaxed))
+}
+
+// FFmpeg 출력에서 변환 진행률 파싱
+fn parse_conversion_progress(line: &str) -> f32 {
+    // FFmpeg 시간 출력 파싱: time=00:01:23.45
+    if let Some(captures) = Regex::new(r"time=(\d{2}):(\d{2}):(\d{2})\.(\d+)").unwrap().captures(line) {
+        if let (Some(hours), Some(minutes), Some(seconds)) = 
+            (captures.get(1), captures.get(2), captures.get(3)) {
+            if let (Ok(h), Ok(m), Ok(s)) = 
+                (hours.as_str().parse::<f32>(), minutes.as_str().parse::<f32>(), seconds.as_str().parse::<f32>()) {
+                let total_seconds = h * 3600.0 + m * 60.0 + s;
+                // 예상 총 시간을 모르므로 임시로 무한 진행률 대신 시간만 반환
+                // 실제로는 비디오 길이를 알아야 정확한 퍼센트 계산 가능
+                return (total_seconds / 10.0).min(95.0); // 임시 계산
+            }
+        }
+    }
+    
+    // FFmpeg 프레임 출력: frame= 1234
+    if let Some(captures) = Regex::new(r"frame=\s*(\d+)").unwrap().captures(line) {
+        if let Some(frame_match) = captures.get(1) {
+            if let Ok(frame) = frame_match.as_str().parse::<f32>() {
+                return (frame / 100.0).min(95.0); // 임시 계산
+            }
+        }
+    }
+    
+    -1.0 // 진행률을 파싱할 수 없는 경우
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .manage(DownloadState::default())
         .manage(EmbeddingState::default())
+        .manage(ConversionState::default())
         .manage(VideoServerState::default())
         .invoke_handler(tauri::generate_handler![
             get_debug_info,
@@ -2150,7 +2357,10 @@ fn main() {
             stop_video_server,
             get_video_server_status,
             get_video_url,
-            open_in_system_player
+            open_in_system_player,
+            convert_video_file,
+            cancel_conversion,
+            get_conversion_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
