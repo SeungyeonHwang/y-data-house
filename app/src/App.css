@@ -1823,3 +1823,155 @@ html, body {
   border-left-color: #58a6ff;
   background: #0d1821;
 }
+
+/* 미니멀 서버 상태 UI */
+.server-status-minimal {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-minimal {
+  color: #ffc107;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+
+
+.video-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #0d1117;
+  border: 2px dashed #30363d;
+  border-radius: 12px;
+  padding: 40px 20px;
+  aspect-ratio: 16/9;
+  max-width: 800px;
+}
+
+.loading-spinner {
+  font-size: 32px;
+  margin-bottom: 12px;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.video-loading p {
+  color: #8b949e;
+  font-size: 14px;
+  margin: 0;
+}
+
+.server-required {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0d1117, #161b22);
+  border: 2px dashed #30363d;
+  border-radius: 12px;
+  padding: 40px 20px;
+  aspect-ratio: 16/9;
+  max-width: 800px;
+  text-align: center;
+}
+
+.server-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.server-required h3 {
+  color: #f0f6fc;
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+}
+
+.server-required p {
+  color: #8b949e;
+  font-size: 14px;
+  margin: 0 0 24px 0;
+  line-height: 1.5;
+}
+
+.start-server-large {
+  background: linear-gradient(135deg, #238636, #2ea043);
+  border: 1px solid #2ea043;
+  color: #f0f6fc;
+  padding: 14px 28px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.start-server-large:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2ea043, #46954a);
+  border-color: #46954a;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(46, 160, 67, 0.3);
+}
+
+.start-server-large:disabled {
+  background: #6e7681;
+  border-color: #6e7681;
+  color: #8b949e;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.technical-info {
+  margin-top: 16px;
+  padding: 12px;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+}
+
+.technical-info details {
+  color: #8b949e;
+}
+
+.technical-info summary {
+  color: #58a6ff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.technical-info p {
+  font-size: 11px;
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
+.technical-info code {
+  background: #21262d;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 10px;
+  word-break: break-all;
+}

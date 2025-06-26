@@ -14,6 +14,11 @@ use regex::Regex;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::sync::Mutex;
 
+// HTTP 서버 관련 imports
+use warp::Filter;
+use tokio::sync::RwLock;
+use std::net::SocketAddr;
+
 #[derive(Debug)]
 struct VideoMetadata {
     title: String,
@@ -88,6 +93,19 @@ struct DownloadState {
     is_cancelled: Arc<AtomicBool>,
     current_process: Arc<Mutex<Option<std::process::Child>>>,
 }
+
+// Range 지원 HTTP 서버 상태 관리
+#[derive(Default)]
+struct VideoServerState {
+    server_port: Arc<RwLock<Option<u16>>>,
+    server_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+// 서버 에러 타입 정의
+#[derive(Debug)]
+struct ServerError;
+
+impl warp::reject::Reject for ServerError {}
 
 // Y-Data-House 및 yt-dlp 출력 파싱
 fn parse_ydh_output(line: &str) -> (f32, String, String) {
@@ -1837,13 +1855,273 @@ fn get_config() -> Result<String, String> {
     }
 }
 
+// Range 요청을 지원하는 비디오 서버 시작
+#[command]
+async fn start_video_server(state: State<'_, VideoServerState>) -> Result<u16, String> {
+    let server_port_lock = state.server_port.read().await;
+    
+    // 이미 서버가 실행 중이면 포트 반환
+    if let Some(port) = *server_port_lock {
+        return Ok(port);
+    }
+    drop(server_port_lock);
+    
+    let project_root = get_project_root();
+    
+    // 사용 가능한 포트 찾기 (OS가 자동 할당)
+    let port = find_available_port().await?;
+    
+    // Range 지원 파일 서빙 필터 생성
+    let files = warp::path("video")
+        .and(warp::path::tail())
+        .and(warp::get())
+        .and(warp::header::optional::<String>("range"))
+        .and_then(move |tail: warp::path::Tail, range: Option<String>| {
+            let project_root = project_root.clone();
+            async move {
+                serve_video_with_range(project_root, tail.as_str(), range).await
+            }
+        });
+    
+    // CORS 헤더 추가 (로컬 전용)
+    let cors = warp::cors()
+        .allow_origin("tauri://localhost")
+        .allow_origin("http://localhost:3000") // 개발용
+        .allow_headers(vec!["content-type", "range"])
+        .allow_methods(vec!["GET", "HEAD", "OPTIONS"]);
+    
+    let routes = files.with(cors);
+    
+    // 서버 시작 (127.0.0.1 바인딩으로 보안 강화)
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let server = warp::serve(routes).run(addr);
+    
+    let handle = tokio::spawn(server);
+    
+    // 상태 업데이트
+    *state.server_port.write().await = Some(port);
+    *state.server_handle.write().await = Some(handle);
+    
+    Ok(port)
+}
 
+// Range 요청을 지원하는 비디오 파일 서빙
+async fn serve_video_with_range(
+    project_root: PathBuf, 
+    file_path: &str, 
+    range_header: Option<String>
+) -> Result<impl warp::Reply, warp::Rejection> {
+    use warp::http::StatusCode;
+    use std::io::{Read, Seek, SeekFrom};
+    
+    // 보안: 경로 탐색 공격 방지
+    let cleaned_path = file_path.replace("..", "");
+    let safe_path = cleaned_path.trim_start_matches('/');
+    
+    // URL 디코딩 처리
+    let decoded_path = match urlencoding::decode(safe_path) {
+        Ok(decoded) => decoded.to_string(),
+        Err(_) => safe_path.to_string(), // 디코딩 실패시 원본 사용
+    };
+    
+    // vault/ 경로를 올바르게 매핑
+    let full_path = project_root.join("vault").join(decoded_path);
+    
+    if !full_path.exists() || !full_path.is_file() {
+        return Err(warp::reject::not_found());
+    }
+    
+    // MIME 타입 추정 (비디오 파일에 대해 명시적으로 설정)
+    let mime_type = if full_path.extension().map(|ext| ext == "mp4").unwrap_or(false) {
+        "video/mp4".to_string()
+    } else {
+        mime_guess::from_path(&full_path)
+            .first_or_octet_stream()
+            .to_string()
+    };
+    
+    // 파일 크기 확인
+    let file_size = match std::fs::metadata(&full_path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => return Err(warp::reject::not_found()),
+    };
+    
+    // Range 헤더 파싱
+    let (start, end) = parse_range_header(range_header.as_deref(), file_size);
+    let content_length = end - start + 1;
+    
+    // 파일 읽기
+    let mut file = match std::fs::File::open(&full_path) {
+        Ok(f) => f,
+        Err(_) => return Err(warp::reject::not_found()),
+    };
+    
+    // 시작 위치로 이동
+    if let Err(_) = file.seek(SeekFrom::Start(start)) {
+        return Err(warp::reject::not_found());
+    }
+    
+    // 요청된 범위만큼 읽기
+    let mut buffer = vec![0u8; content_length as usize];
+    if let Err(_) = file.read_exact(&mut buffer) {
+        return Err(warp::reject::not_found());
+    }
+    
+    // HTTP 응답 생성 (warp::reply::Response 사용)
+    use warp::http::Response;
+    
+    let status_code = if range_header.is_some() && (start != 0 || end + 1 != file_size) {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    
+    let mut response_builder = Response::builder()
+        .status(status_code)
+        .header("content-type", mime_type)
+        .header("accept-ranges", "bytes")
+        .header("access-control-allow-origin", "*")
+        .header("access-control-allow-methods", "GET, HEAD, OPTIONS")
+        .header("access-control-allow-headers", "range")
+        .header("cache-control", "no-cache");
+    
+    if range_header.is_some() && (start != 0 || end + 1 != file_size) {
+        response_builder = response_builder
+            .header("content-range", format!("bytes {}-{}/{}", start, end, file_size))
+            .header("content-length", content_length.to_string());
+    } else {
+        response_builder = response_builder
+            .header("content-length", file_size.to_string());
+    }
+    
+         match response_builder.body(buffer) {
+         Ok(response) => Ok(response),
+         Err(_) => Err(warp::reject::custom(ServerError)),
+     }
+}
+
+// Range 헤더 파싱 함수
+fn parse_range_header(range_header: Option<&str>, file_size: u64) -> (u64, u64) {
+    if let Some(range) = range_header {
+        if let Some(range_value) = range.strip_prefix("bytes=") {
+            if let Some((start_str, end_str)) = range_value.split_once('-') {
+                let start = start_str.parse::<u64>().unwrap_or(0);
+                let end = if end_str.is_empty() {
+                    file_size - 1
+                } else {
+                    end_str.parse::<u64>().unwrap_or(file_size - 1).min(file_size - 1)
+                };
+                return (start, end);
+            }
+        }
+    }
+    (0, file_size - 1)
+}
+
+// 사용 가능한 포트 찾기
+async fn find_available_port() -> Result<u16, String> {
+    use std::net::TcpListener;
+    
+    // OS가 자동으로 할당하는 방식 (포트 0 사용)
+    match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => {
+            let port = listener.local_addr().unwrap().port();
+            drop(listener); // 바로 해제
+            Ok(port)
+        }
+        Err(_) => {
+            // fallback: 수동으로 포트 검색
+            for port in 8080..8090 {
+                if TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok() {
+                    return Ok(port);
+                }
+            }
+            Err("사용 가능한 포트를 찾을 수 없습니다".to_string())
+        }
+    }
+}
+
+// 비디오 서버 중지
+#[command]
+async fn stop_video_server(state: State<'_, VideoServerState>) -> Result<(), String> {
+    let mut server_handle_lock = state.server_handle.write().await;
+    let mut server_port_lock = state.server_port.write().await;
+    
+    if let Some(handle) = server_handle_lock.take() {
+        handle.abort();
+    }
+    
+    *server_port_lock = None;
+    
+    Ok(())
+}
+
+// 비디오 서버 상태 확인
+#[command]
+async fn get_video_server_status(state: State<'_, VideoServerState>) -> Result<Option<u16>, String> {
+    let server_port_lock = state.server_port.read().await;
+    Ok(*server_port_lock)
+}
+
+// 비디오 URL 생성
+#[command]
+async fn get_video_url(video_path: String, state: State<'_, VideoServerState>) -> Result<String, String> {
+    let server_port_lock = state.server_port.read().await;
+    
+    if let Some(port) = *server_port_lock {
+        // vault/ 경로 제거하고 HTTP URL 생성
+        let clean_path = video_path.trim_start_matches("vault/");
+        Ok(format!("http://127.0.0.1:{}/video/{}", port, clean_path))
+    } else {
+        Err("비디오 서버가 실행되지 않았습니다. 먼저 서버를 시작해주세요.".to_string())
+    }
+}
+
+// 시스템 플레이어로 비디오 열기
+#[command]
+async fn open_in_system_player(video_path: String) -> Result<(), String> {
+    let project_root = get_project_root();
+    let full_path = project_root.join(&video_path);
+    
+    if !full_path.exists() {
+        return Err(format!("비디오 파일을 찾을 수 없습니다: {}", full_path.display()));
+    }
+    
+    // 운영체제별 명령어 실행
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&full_path)
+            .spawn()
+            .map_err(|e| format!("macOS 시스템 플레이어 실행 실패: {}", e))?;
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(&["/C", "start", "", &full_path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Windows 시스템 플레이어 실행 실패: {}", e))?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&full_path)
+            .spawn()
+            .map_err(|e| format!("Linux 시스템 플레이어 실행 실패: {}", e))?;
+    }
+    
+    println!("🎬 시스템 플레이어로 비디오 열기: {}", full_path.display());
+    Ok(())
+}
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .manage(DownloadState::default())
         .manage(EmbeddingState::default())
+        .manage(VideoServerState::default())
         .invoke_handler(tauri::generate_handler![
             get_debug_info,
             list_videos,
@@ -1867,7 +2145,12 @@ fn main() {
             get_app_status,
             get_recent_videos_by_channel,
             get_config,
-            get_project_root_path
+            get_project_root_path,
+            start_video_server,
+            stop_video_server,
+            get_video_server_status,
+            get_video_url,
+            open_in_system_player
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -84,7 +84,10 @@ export default function App() {
   const [selectedVideo, setSelectedVideo] = useState<VideoInfo | null>(null);
   const [captions, setCaptions] = useState<CaptionLine[]>([]);
   const [fuse, setFuse] = useState<Fuse<CaptionLine>>();
-  const [videoAssetUrl, setVideoAssetUrl] = useState<string | null>(null);
+  // Range 지원 비디오 서버 상태
+  const [videoServerPort, setVideoServerPort] = useState<number | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [serverLoading, setServerLoading] = useState(false);
   
   // 채널 관련 상태
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
@@ -100,6 +103,10 @@ export default function App() {
   const [aiQuestion, setAiQuestion] = useState('');
   const [aiAnswer, setAiAnswer] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
+  
+  // 비디오 코덱 호환성 상태
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [codecInfo, setCodecInfo] = useState<string | null>(null);
   
   // 작업 상태
   const [downloadLoading, setDownloadLoading] = useState(false);
@@ -131,10 +138,52 @@ export default function App() {
   // 채널별 토글 상태
   const [collapsedChannels, setCollapsedChannels] = useState<Set<string>>(new Set());
 
+  // 비디오 서버 시작
+  const startVideoServer = async () => {
+    setServerLoading(true);
+    try {
+      const port = await invoke<number>('start_video_server');
+      setVideoServerPort(port);
+      
+      // 현재 선택된 비디오가 있으면 URL 생성
+      if (selectedVideo) {
+        const url = await invoke<string>('get_video_url', { videoPath: selectedVideo.video_path });
+        setVideoUrl(url);
+      }
+    } catch (error) {
+      console.error('비디오 서버 시작 실패:', error);
+      alert(`서버 시작 실패: ${error}`);
+    } finally {
+      setServerLoading(false);
+    }
+  };
+
+  // 비디오 서버 중지
+  const stopVideoServer = async () => {
+    try {
+      await invoke('stop_video_server');
+      setVideoServerPort(null);
+      setVideoUrl(null);
+    } catch (error) {
+      console.error('비디오 서버 중지 실패:', error);
+    }
+  };
+
+  // 비디오 서버 상태 확인
+  const checkVideoServerStatus = async () => {
+    try {
+      const port = await invoke<number | null>('get_video_server_status');
+      setVideoServerPort(port);
+    } catch (error) {
+      console.error('서버 상태 확인 실패:', error);
+    }
+  };
+
   // 초기 데이터 로드
   useEffect(() => {
     loadAppData();
     loadDebugInfo();
+    checkVideoServerStatus(); // 서버 상태 확인
     
     // 다운로드 진행 상황 이벤트 리스너
     const unlistenDownload = listen<DownloadProgress>('download-progress', (event) => {
@@ -181,9 +230,6 @@ export default function App() {
       unlistenDownload.then(f => f());
       unlistenEmbedding.then(f => f());
       unlistenIntegrity.then(f => f());
-      
-      // Asset URL 정리 (필요시)
-      setVideoAssetUrl(null);
     };
   }, []);
 
@@ -221,28 +267,29 @@ export default function App() {
     }
   };
 
-  // 선택된 비디오의 캡션 로드 및 비디오 Blob URL 생성
+  // 선택된 비디오의 캡션 로드 및 비디오 URL 생성
   useEffect(() => {
     if (!selectedVideo) {
       setCaptions([]);
       setFuse(undefined);
-      setVideoAssetUrl(null);
+      setVideoUrl(null);
       return;
     }
-    
 
-
-    // 절대경로로 asset URL 생성
-         toAssetUrl(selectedVideo.video_path)
-       .then((assetUrl) => {
-         setVideoAssetUrl(assetUrl);
-       })
-       .catch((error) => {
-         console.error('❌ Asset URL 생성 실패:', error);
-         setVideoAssetUrl(null);
-       });
+    // 선택된 비디오로 스크롤하여 포커싱
+    if (activeTab === 'videos') {
+      setTimeout(() => {
+        const activeVideoElement = document.querySelector('.video-item.video-item-active');
+        if (activeVideoElement) {
+          activeVideoElement.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center'
+          });
+        }
+      }, 100); // 탭 전환 후 잠시 대기
+    }
     
-    // asset protocol로 캡션 파일 읽기
+    // 캡션 파일 로드
     toAssetUrl(selectedVideo.captions_path)
       .then((assetUrl) => fetch(assetUrl))
       .then((response) => response.text())
@@ -255,7 +302,87 @@ export default function App() {
       .catch((error) => {
         console.error('❌ 캡션 파일 읽기 실패:', error);
       });
-  }, [selectedVideo]);
+
+    // 비디오 URL 생성 (서버가 실행 중인 경우) 또는 서버 자동 시작
+    const generateVideoUrl = async () => {
+      if (videoServerPort) {
+        // 서버가 이미 실행 중이면 URL 생성
+        try {
+          const url = await invoke<string>('get_video_url', { videoPath: selectedVideo.video_path });
+          setVideoUrl(url);
+          setVideoError(null);
+          setCodecInfo('MP4 컨테이너 (H.264 또는 AV1 코덱)');
+        } catch (error) {
+          console.error('비디오 URL 생성 실패:', error);
+          setVideoUrl(null);
+          setVideoError('비디오 URL 생성에 실패했습니다.');
+        }
+      } else {
+        // 서버가 중지되어 있으면 자동으로 시작
+        setServerLoading(true);
+        try {
+          const port = await invoke<number>('start_video_server');
+          setVideoServerPort(port);
+          
+          // 서버 시작 후 URL 생성
+          const url = await invoke<string>('get_video_url', { videoPath: selectedVideo.video_path });
+          setVideoUrl(url);
+          setVideoError(null);
+          setCodecInfo('MP4 컨테이너 (H.264 또는 AV1 코덱)');
+        } catch (error) {
+          console.error('서버 자동 시작 또는 URL 생성 실패:', error);
+          setVideoUrl(null);
+          setVideoError(`서버 시작 실패: ${error}`);
+        } finally {
+          setServerLoading(false);
+        }
+      }
+    };
+
+    generateVideoUrl();
+  }, [selectedVideo, videoServerPort]);
+
+  // 비디오 에러 처리
+  const handleVideoError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
+    console.error('Video load error:', e);
+    const video = e.currentTarget;
+    
+    if (video.error) {
+      let errorMessage = '비디오 재생 오류: ';
+      switch (video.error.code) {
+        case MediaError.MEDIA_ERR_ABORTED:
+          errorMessage += '재생이 중단되었습니다.';
+          break;
+        case MediaError.MEDIA_ERR_NETWORK:
+          errorMessage += '네트워크 오류가 발생했습니다.';
+          break;
+        case MediaError.MEDIA_ERR_DECODE:
+          errorMessage += '비디오 디코딩 오류 (AV1 코덱 호환성 문제일 수 있습니다)';
+          break;
+        case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+          errorMessage += '지원되지 않는 비디오 포맷 또는 코덱입니다 (AV1 코덱일 가능성 높음)';
+          break;
+        default:
+          errorMessage += '알 수 없는 오류가 발생했습니다.';
+      }
+      setVideoError(errorMessage);
+    }
+  };
+
+  // 시스템 플레이어로 열기
+  const openInSystemPlayer = async () => {
+    if (!selectedVideo) return;
+    
+    try {
+      // macOS의 경우 'open' 명령어 사용
+      await invoke('open_in_system_player', { 
+        videoPath: selectedVideo.video_path 
+      });
+    } catch (error) {
+      console.error('시스템 플레이어 실행 실패:', error);
+      alert('시스템 플레이어로 열기에 실패했습니다. 파일을 직접 열어보세요.');
+    }
+  };
 
   // 캡션 검색
   const searchCaptions = () => {
@@ -385,8 +512,6 @@ export default function App() {
       setEmbedLoading(false);
     }
   };
-
-
 
   // 임베딩 중단
   const cancelEmbedding = async () => {
@@ -577,7 +702,10 @@ export default function App() {
                         <div 
                           key={`popular-${video.video_id}-${index}`} 
                           className="video-item"
-                          onClick={() => setActiveTab('videos')}
+                          onClick={() => {
+                            setSelectedVideo(video);
+                            setActiveTab('videos');
+                          }}
                         >
                           <div className="video-rank">#{index + 1}</div>
                           <div className="video-details">
@@ -607,7 +735,10 @@ export default function App() {
                         <div 
                           key={`latest-${video.video_id}-${index}`} 
                           className="video-item"
-                          onClick={() => setActiveTab('videos')}
+                          onClick={() => {
+                            setSelectedVideo(video);
+                            setActiveTab('videos');
+                          }}
                         >
                           <div className="video-details">
                             <h4 className="video-title-small">{video.title}</h4>
@@ -1043,7 +1174,7 @@ export default function App() {
                           {channelVideos.map((video, index) => (
                             <div
                               key={`${channelName}-${index}`}
-                              className={`video-item ${selectedVideo === video ? 'video-item-active' : ''}`}
+                              className={`video-item ${selectedVideo && (selectedVideo.video_id === video.video_id || selectedVideo.video_path === video.video_path) ? 'video-item-active' : ''}`}
                               onClick={() => setSelectedVideo(video)}
                             >
                               {video.upload_date && (
@@ -1070,23 +1201,93 @@ export default function App() {
               <div className="video-main">
                 {selectedVideo ? (
                   <>
-                    <video
-                      src={videoAssetUrl || ''}
-                      controls
-                      className="video-player"
-                      preload="metadata"
-                      style={{ width: '100%', height: 'auto' }}
-                      onError={(e) => {
-                        console.error('Video load error:', e);
-                      }}
-                    >
-                      {videoAssetUrl ? '비디오를 로드할 수 없습니다.' : '비디오 로딩 중...'}
-                    </video>
+                    {/* 서버 로딩 상태만 표시 (미니멀) */}
+                    {serverLoading && (
+                      <div className="server-status-minimal">
+                        <span className="status-minimal">🟡 비디오 서버 시작 중...</span>
+                      </div>
+                    )}
+
+                    {/* 비디오 플레이어 */}
+                    {videoUrl ? (
+                      <div className="video-container">
+                        <video
+                          src={videoUrl}
+                          controls
+                          className="video-player"
+                          preload="metadata"
+                          style={{ width: '100%', height: 'auto' }}
+                          onError={handleVideoError}
+                          onLoadStart={() => {
+                            setVideoError(null); // 로딩 시작 시 에러 초기화
+                          }}
+                          onCanPlay={() => {
+                            setVideoError(null); // 재생 가능 시 에러 초기화
+                          }}
+                        >
+                          비디오를 로드할 수 없습니다.
+                        </video>
+                        
+                                                 {/* 비디오 에러 표시 및 대체 방안 */}
+                         {videoError && (
+                           <div style={styles.videoErrorContainer}>
+                             <div style={styles.videoError}>
+                               <div style={styles.videoErrorIcon}>⚠️</div>
+                               <div style={styles.errorContent}>
+                                 <h4>비디오 재생 문제</h4>
+                                 <p>{videoError}</p>
+                                 {videoError.includes('AV1') || videoError.includes('코덱') ? (
+                                   <div style={styles.codecHelp}>
+                                     <p><strong>해결 방법:</strong></p>
+                                     <ul>
+                                       <li>최신 브라우저를 사용하세요 (Chrome 90+, Firefox 88+)</li>
+                                       <li>하드웨어 가속을 활성화하세요</li>
+                                       <li>아래 버튼으로 시스템 플레이어에서 재생하세요</li>
+                                     </ul>
+                                   </div>
+                                 ) : null}
+                                 <button 
+                                   onClick={openInSystemPlayer}
+                                   style={styles.systemPlayerButton}
+                                 >
+                                   🎬 시스템 플레이어로 열기
+                                 </button>
+                               </div>
+                             </div>
+                           </div>
+                         )}
+                      </div>
+                    ) : videoServerPort ? (
+                      <div className="video-loading">
+                        <div className="loading-spinner">⏳</div>
+                        <p>비디오 URL 생성 중...</p>
+                      </div>
+                    ) : (
+                      <div className="server-required">
+                        <div className="server-icon">🎬</div>
+                        <h3>비디오 자동 로딩 중</h3>
+                        <p>비디오 서버를 자동으로 시작하고 있습니다.<br/>잠시만 기다려주세요...</p>
+                        <div className="loading-spinner">⏳</div>
+                      </div>
+                    )}
+
                     <div className="video-info">
                       <h3 className="video-title-main">{selectedVideo.title}</h3>
                       <p className="video-channel-main">{selectedVideo.channel}</p>
                       {selectedVideo.upload_date && (
                         <p className="video-upload-date">업로드: {selectedVideo.upload_date}</p>
+                      )}
+                      {videoUrl && (
+                        <div className="technical-info">
+                          <details>
+                            <summary>기술 정보</summary>
+                            <p><strong>URL:</strong> <code>{videoUrl}</code></p>
+                            <p><strong>컨테이너:</strong> {codecInfo || 'MP4'}</p>
+                            <p><strong>지원 기능:</strong> HTTP Range 요청, 206 Partial Content</p>
+                            <p><strong>서버 호환성:</strong> Safari, Chrome, Firefox, Edge 완벽 지원</p>
+                            <p><strong>코덱 참고:</strong> AV1 코덱은 일부 브라우저에서 지원하지 않을 수 있습니다.</p>
+                          </details>
+                        </div>
                       )}
                     </div>
 
@@ -1890,5 +2091,51 @@ const styles = {
     fontSize: '16px',
     fontWeight: 600,
     cursor: 'pointer',
+  },
+  
+  // 비디오 에러 스타일
+  videoErrorContainer: {
+    marginTop: '16px',
+  },
+  
+  videoError: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '12px',
+    padding: '16px',
+    backgroundColor: '#2c1810',
+    border: '1px solid #ff6b47',
+    borderRadius: '8px',
+    color: '#fff',
+  },
+  
+  videoErrorIcon: {
+    fontSize: '24px',
+    flexShrink: 0,
+  },
+  
+  errorContent: {
+    flex: 1,
+  },
+  
+  codecHelp: {
+    marginTop: '12px',
+    padding: '12px',
+    backgroundColor: '#1a1a1a',
+    borderRadius: '6px',
+    fontSize: '13px',
+  },
+  
+  systemPlayerButton: {
+    marginTop: '12px',
+    padding: '8px 16px',
+    backgroundColor: '#2ed573',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    fontSize: '14px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'background-color 0.2s ease',
   },
 };
