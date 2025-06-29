@@ -637,8 +637,8 @@ def config_validate():
 
 @main.command()
 @click.argument('video_path', type=click.Path(exists=True))
-@click.option('--quality', default='keep', type=click.Choice(['480p', '720p', '1080p', 'keep']),
-              help='변환할 화질 (기본: keep - 원본 해상도 유지)')
+@click.option('--quality', default='480p', type=click.Choice(['480p', '720p', '1080p', 'keep']),
+              help='변환할 화질 (기본: 480p)')
 @click.option('--codec', default='h264', type=click.Choice(['h264', 'h265']),
               help='변환할 코덱 (기본: h264)')
 @click.option('--backup/--no-backup', default=True, help='원본 파일 백업 여부')
@@ -796,6 +796,22 @@ def _convert_video_file(video_file: Path, quality: str, codec: str, backup: bool
     if not _check_ffmpeg_installation():
         return False
     
+    # 변환 시작 전 원본 백업 (backup 옵션이 활성화된 경우)
+    if backup and backup_file:
+        try:
+            # 기존 백업 파일이 있으면 삭제
+            if backup_file.exists():
+                backup_file.unlink()
+                logger.info(f"🗑️ 기존 백업 파일 삭제: {backup_file.name}")
+            
+            # 원본을 백업으로 복사
+            import shutil
+            shutil.copy2(video_file, backup_file)
+            logger.info(f"💾 원본 백업 생성: {backup_file.name}")
+        except Exception as e:
+            logger.error(f"❌ 백업 생성 실패: {e}")
+            return False
+    
     try:
         # 하드웨어 가속 감지
         hw_accel = _detect_hardware_acceleration()
@@ -883,6 +899,9 @@ def _convert_video_file(video_file: Path, quality: str, codec: str, backup: bool
                 logger.error("FFmpeg stderr 출력:")
                 for line in stderr_output[-10:]:  # 마지막 10줄만 표시
                     logger.error(f"  {line}")
+                
+                # 변환 실패 시 복구 처리
+                _handle_conversion_failure(output_file, backup_file, video_file)
                 return False
         else:
             # 진행률 없이 실행
@@ -893,27 +912,52 @@ def _convert_video_file(video_file: Path, quality: str, codec: str, backup: bool
                 logger.error("FFmpeg 변환 실패")
                 logger.error(f"FFmpeg stdout: {result.stdout}")
                 logger.error(f"FFmpeg stderr: {result.stderr}")
+                
+                # 변환 실패 시 복구 처리
+                _handle_conversion_failure(output_file, backup_file, video_file)
                 return False
         
         # 변환 성공 시 파일 교체
-        if backup and backup_file:
-            video_file.rename(backup_file)
-            logger.info(f"💾 원본 백업: {backup_file.name}")
-        else:
-            video_file.unlink()
-            logger.info("🗑️ 원본 파일 삭제")
-        
         output_file.rename(video_file)
         logger.info(f"✅ 변환 완료: {video_file.name}")
+        
+        # 성공 시 백업 파일 삭제 (원본은 이미 변환된 파일로 교체됨)
+        if backup and backup_file and backup_file.exists():
+            backup_file.unlink()
+            logger.info(f"🗑️ 백업 파일 삭제: {backup_file.name}")
         
         return True
         
     except Exception as e:
         logger.error(f"변환 중 오류: {e}")
-        # 정리
+        # 예외 발생 시에도 복구 처리
+        _handle_conversion_failure(output_file, backup_file, video_file)
+        return False
+
+
+def _handle_conversion_failure(output_file: Path, backup_file: Path, video_file: Path) -> None:
+    """변환 실패 시 복구 처리를 수행합니다."""
+    try:
+        # converted 파일이 있으면 삭제
         if output_file.exists():
             output_file.unlink()
-        return False
+            logger.info(f"🗑️ 변환 실패 파일 삭제: {output_file.name}")
+        
+        # 백업 파일이 있으면 원본으로 복구
+        if backup_file and backup_file.exists():
+            # 원본 파일이 손상되었을 가능성에 대비하여 백업에서 복구
+            if not video_file.exists():
+                backup_file.rename(video_file)
+                logger.info(f"🔄 백업에서 원본 복구: {video_file.name}")
+            else:
+                # 원본이 여전히 존재하면 백업만 삭제
+                backup_file.unlink()
+                logger.info(f"🗑️ 백업 파일 정리: {backup_file.name}")
+        
+        logger.info("✅ 변환 실패 후 정리 완료")
+        
+    except Exception as e:
+        logger.error(f"❌ 복구 처리 중 오류: {e}")
 
 
 @main.command()
