@@ -1928,11 +1928,11 @@ async fn serve_video_with_range(
     // URL 디코딩 처리
     let decoded_path = match urlencoding::decode(safe_path) {
         Ok(decoded) => decoded.to_string(),
-        Err(_) => safe_path.to_string(), // 디코딩 실패시 원본 사용
+        Err(_) => safe_path.to_string()
     };
     
     // vault/ 경로를 올바르게 매핑
-    let full_path = project_root.join("vault").join(decoded_path);
+    let full_path = project_root.join("vault").join(&decoded_path);
     
     if !full_path.exists() || !full_path.is_file() {
         return Err(warp::reject::not_found());
@@ -2078,7 +2078,11 @@ async fn get_video_url(video_path: String, state: State<'_, VideoServerState>) -
     if let Some(port) = *server_port_lock {
         // vault/ 경로 제거하고 HTTP URL 생성
         let clean_path = video_path.trim_start_matches("vault/");
-        Ok(format!("http://127.0.0.1:{}/video/{}", port, clean_path))
+        
+        // URL 인코딩 처리 - 특수문자와 한글 문자 처리
+        let encoded_path = urlencoding::encode(clean_path).to_string();
+        
+        Ok(format!("http://127.0.0.1:{}/video/{}", port, encoded_path))
     } else {
         Err("비디오 서버가 실행되지 않았습니다. 먼저 서버를 시작해주세요.".to_string())
     }
