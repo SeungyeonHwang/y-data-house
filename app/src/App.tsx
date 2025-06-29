@@ -57,6 +57,9 @@ interface DownloadProgress {
 interface CaptionLine {
   index: number;
   content: string;
+  timestamp?: string;
+  start_time?: number;
+  end_time?: number;
 }
 
 type TabType = 'dashboard' | 'channels' | 'videos' | 'search' | 'ai' | 'settings';
@@ -74,6 +77,121 @@ async function toAssetUrl(vaultRelPath: string): Promise<string> {
   }
 }
 
+// 마크다운에서 실제 자막 내용만 파싱하는 함수 (개선된 버전)
+function parseCaptionsFromMarkdown(markdownText: string): CaptionLine[] {
+  const lines = markdownText.split(/\r?\n/);
+  const captions: CaptionLine[] = [];
+  let inCaptionSection = false;
+  let skipNextEmptyLine = false;
+  let index = 0;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // YAML frontmatter 건너뛰기
+    if (line === '---') {
+      if (i === 0) {
+        // frontmatter 시작
+        while (i < lines.length - 1) {
+          i++;
+          if (lines[i].trim() === '---') {
+            break; // frontmatter 끝
+          }
+        }
+        continue;
+      }
+    }
+    
+    // "## 📝 자막 내용" 섹션 찾기
+    if (line.includes('📝 자막 내용') || line.includes('자막 내용') || line.includes('## 자막') || line.includes('## Transcript')) {
+      inCaptionSection = true;
+      skipNextEmptyLine = true;
+      continue;
+    }
+    
+    // 다른 섹션 헤더를 만나면 자막 섹션 종료
+    if (inCaptionSection && line.startsWith('##') && !line.includes('자막')) {
+      break;
+    }
+    
+    // 자막 섹션 내에서 실제 내용 추출
+    if (inCaptionSection) {
+      if (skipNextEmptyLine && line === '') {
+        skipNextEmptyLine = false;
+        continue;
+      }
+      
+      if (line !== '' && !line.startsWith('#') && !line.startsWith('---')) {
+        // 시간 정보나 불필요한 정보 제거
+        let cleanedLine = line;
+        let timestamp = '';
+        let startTime = 0;
+        let endTime = 0;
+        
+        // 시간 스탬프 추출 및 제거 (예: [00:12:34] 형식)
+        const timeMatch = cleanedLine.match(/\[(\d+:\d+:\d+)\]/);
+        if (timeMatch) {
+          timestamp = timeMatch[1];
+          // 시간을 초로 변환
+          const timeParts = timestamp.split(':').map(Number);
+          startTime = timeParts[0] * 3600 + timeParts[1] * 60 + timeParts[2];
+          cleanedLine = cleanedLine.replace(/\[\d+:\d+:\d+\]/g, '').trim();
+        }
+        
+        // 화자 정보 제거 (예: "Speaker: " 형식)
+        cleanedLine = cleanedLine.replace(/^[^:]+:\s*/, '').trim();
+        // 불필요한 마크다운 포맷 제거
+        cleanedLine = cleanedLine.replace(/^[*-]\s*/, '').trim();
+        
+        if (cleanedLine.length > 0) {
+          captions.push({
+            index: index++,
+            content: cleanedLine,
+            timestamp,
+            start_time: startTime,
+            end_time: startTime + 5 // 기본 5초 길이로 설정
+          });
+        }
+      }
+    }
+  }
+  
+  // 자막 섹션을 찾지 못한 경우, 전체 내용에서 의미 있는 텍스트 추출
+  if (captions.length === 0) {
+    index = 0;
+    for (const line of lines) {
+      const cleanedLine = line.trim();
+      if (cleanedLine.length > 0 && 
+          !cleanedLine.startsWith('---') && 
+          !cleanedLine.startsWith('#') && 
+          !cleanedLine.includes('title:') && 
+          !cleanedLine.includes('upload:') && 
+          !cleanedLine.includes('channel:') && 
+          !cleanedLine.includes('video_id:') && 
+          !cleanedLine.includes('topic:') && 
+          !cleanedLine.includes('source_url:')) {
+        // 시간 정보 제거
+        let processedLine = cleanedLine.replace(/\[\d+:\d+:\d+\]/g, '').trim();
+        processedLine = processedLine.replace(/^[*-]\s*/, '').trim();
+        
+        if (processedLine.length > 10) { // 너무 짧은 텍스트 제외
+          captions.push({
+            index: index++,
+            content: processedLine,
+            timestamp: '',
+            start_time: 0,
+            end_time: 0
+          });
+        }
+      }
+    }
+  }
+  
+  return captions;
+}
+
+
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
@@ -84,6 +202,15 @@ export default function App() {
   const [selectedVideo, setSelectedVideo] = useState<VideoInfo | null>(null);
   const [captions, setCaptions] = useState<CaptionLine[]>([]);
   const [fuse, setFuse] = useState<Fuse<CaptionLine>>();
+  
+  // 자막 관련 새로운 상태들
+  const [captionFilter, setCaptionFilter] = useState('');
+  const [filteredCaptions, setFilteredCaptions] = useState<CaptionLine[]>([]);
+  const [highlightedCaptions, setHighlightedCaptions] = useState<Set<number>>(new Set());
+  const [captionLoading, setCaptionLoading] = useState(false);
+  const [currentCaptionIndex, setCurrentCaptionIndex] = useState(-1);
+
+  
   // Range 지원 비디오 서버 상태
   const [videoServerPort, setVideoServerPort] = useState<number | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -196,6 +323,13 @@ export default function App() {
   useEffect(() => {
     setFilteredVideos(videos);
   }, [videos]);
+
+  // 자막 필터가 변경될 때 자동으로 필터링 적용
+  useEffect(() => {
+    if (captions.length > 0) {
+      applyCaptionFilter();
+    }
+  }, [captionFilter, captions]);
 
   // 초기 데이터 로드
   useEffect(() => {
@@ -337,8 +471,12 @@ export default function App() {
   useEffect(() => {
     if (!selectedVideo) {
       setCaptions([]);
+      setFilteredCaptions([]);
       setFuse(undefined);
       setVideoUrl(null);
+      setHighlightedCaptions(new Set());
+      setCaptionFilter('');
+      setCurrentCaptionIndex(-1);
       return;
     }
 
@@ -355,18 +493,26 @@ export default function App() {
       }, 100); // 탭 전환 후 잠시 대기
     }
     
-    // 캡션 파일 로드
+    // 캡션 파일 로드 및 파싱
+    setCaptionLoading(true);
     toAssetUrl(selectedVideo.captions_path)
       .then((assetUrl) => fetch(assetUrl))
       .then((response) => response.text())
       .then((text) => {
-        const lines = text.split(/\r?\n/).filter(Boolean);
-        const docs = lines.map((content, index) => ({ index, content }));
-        setCaptions(docs);
-        setFuse(new Fuse(docs, { keys: ['content'], threshold: 0.3 }));
+        // 마크다운에서 실제 자막 내용만 추출
+        const parsedCaptions = parseCaptionsFromMarkdown(text);
+        setCaptions(parsedCaptions);
+        setFilteredCaptions(parsedCaptions);
+        setFuse(new Fuse(parsedCaptions, { keys: ['content'], threshold: 0.3 }));
       })
       .catch((error) => {
         console.error('❌ 캡션 파일 읽기 실패:', error);
+        setCaptions([]);
+        setFilteredCaptions([]);
+        setFuse(undefined);
+      })
+      .finally(() => {
+        setCaptionLoading(false);
       });
 
     // 비디오 URL 생성 (서버가 실행 중인 경우) 또는 서버 자동 시작
@@ -489,9 +635,66 @@ export default function App() {
   const searchCaptions = () => {
     if (!fuse || searchQuery.length < 2) {
       setSearchResults([]);
+      setHighlightedCaptions(new Set());
       return;
     }
-    setSearchResults(fuse.search(searchQuery).map((x) => x.item));
+    const results = fuse.search(searchQuery);
+    const resultItems = results.map((result: any) => result.item);
+    const highlightedIndices = new Set(resultItems.map((item: CaptionLine) => item.index));
+    
+    setSearchResults(resultItems);
+    setHighlightedCaptions(highlightedIndices);
+  };
+
+  // 자막 필터 적용
+  const applyCaptionFilter = () => {
+    if (!captionFilter.trim()) {
+      setFilteredCaptions(captions);
+      setHighlightedCaptions(new Set());
+      return;
+    }
+    
+    const lowerQuery = captionFilter.toLowerCase();
+    const filtered = captions.filter(caption => 
+      caption.content.toLowerCase().includes(lowerQuery)
+    );
+    setFilteredCaptions(filtered);
+    
+    const highlightedIndices = new Set(filtered.map(caption => caption.index));
+    setHighlightedCaptions(highlightedIndices);
+  };
+
+  // 자막 필터 초기화
+  const clearCaptionFilter = () => {
+    setCaptionFilter('');
+    setFilteredCaptions(captions);
+    setHighlightedCaptions(new Set());
+  };
+
+  // 자막 하이라이트 텍스트 생성
+  const getHighlightedText = (text: string, query: string): string => {
+    if (!query.trim()) return text;
+    
+    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return text.replace(regex, '<span class="highlight">$1</span>');
+  };
+
+  // 자막 전체 복사 함수
+  const copyAllCaptions = async () => {
+    if (captions.length === 0) return;
+    
+    try {
+      const captionsText = captions
+        .map((caption, index) => {
+          const timestamp = caption.timestamp ? `[${caption.timestamp}] ` : '';
+          return `${index + 1}. ${timestamp}${caption.content}`;
+        })
+        .join('\n\n');
+      
+      await navigator.clipboard.writeText(captionsText);
+    } catch (error) {
+      console.error('복사 실패:', error);
+    }
   };
 
   // 벡터 검색
@@ -1567,28 +1770,92 @@ export default function App() {
                     </div>
 
                     <div className="caption-search">
-                      <h4 className="section-title">캡션 검색</h4>
-                      <div className="search-container">
-                        <input
-                          type="text"
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                          placeholder="캡션에서 검색..."
-                          className="search-input"
-                          onKeyPress={(e) => e.key === 'Enter' && searchCaptions()}
-                        />
-                        <button onClick={searchCaptions} className="search-button">
-                          🔍 검색
-                        </button>
+                      <h4 className="section-title">📝 자막 내용</h4>
+                      
+                      {/* 자막 필터링 섹션 */}
+                      <div className="caption-filter-section">
+                        <div className="caption-filter-controls">
+                          <input
+                            type="text"
+                            value={captionFilter}
+                            onChange={(e) => setCaptionFilter(e.target.value)}
+                            placeholder="자막에서 검색..."
+                            className="caption-filter-input"
+                            onKeyPress={(e) => e.key === 'Enter' && applyCaptionFilter()}
+                          />
+                          <button onClick={applyCaptionFilter} className="caption-filter-button">
+                            🔍 필터
+                          </button>
+                          {captionFilter && (
+                            <button onClick={clearCaptionFilter} className="caption-clear-button">
+                              ✕ 초기화
+                            </button>
+                          )}
+                        </div>
                       </div>
                       
+                      {/* 자막 컨테이너 */}
                       <div className="captions-container">
-                        {(searchResults.length > 0 ? searchResults : captions).slice(0, 20).map((line) => (
-                          <div key={line.index} className="caption-line">
-                            <span className="caption-index">{line.index + 1}</span>
-                            <span className="caption-text">{line.content}</span>
+                        <div className="captions-header">
+                          <div className="captions-title">
+                            📋 자막 목록
+                            <span className="captions-count">
+                              {filteredCaptions.length > 0 ? filteredCaptions.length : captions.length}개
+                            </span>
                           </div>
-                        ))}
+                          <div className="captions-controls">
+                            <button 
+                              onClick={copyAllCaptions}
+                              className="caption-copy-button"
+                              disabled={captions.length === 0 || captionLoading}
+                              title="전체 자막 복사"
+                            >
+                              📋
+                            </button>
+                          </div>
+                        </div>
+                        
+                        <div className="captions-content">
+                          {captionLoading ? (
+                            <div className="captions-loading">
+                              <div className="captions-loading-spinner">⏳</div>
+                              <div className="captions-loading-text">자막 로딩 중...</div>
+                            </div>
+                          ) : (filteredCaptions.length > 0 ? filteredCaptions : captions).length > 0 ? (
+                            (filteredCaptions.length > 0 ? filteredCaptions : captions).map((caption) => (
+                              <div 
+                                key={caption.index} 
+                                className={`caption-item ${highlightedCaptions.has(caption.index) ? 'highlighted' : ''}`}
+                                data-caption-index={caption.index}
+                                onClick={() => setCurrentCaptionIndex(caption.index)}
+                              >
+                                <div className="caption-header">
+                                  <span className="caption-index">#{caption.index + 1}</span>
+                                  {caption.timestamp && (
+                                    <span className="caption-timestamp">
+                                      {caption.timestamp}
+                                    </span>
+                                  )}
+                                </div>
+                                <div 
+                                  className="caption-text"
+                                  dangerouslySetInnerHTML={{
+                                    __html: getHighlightedText(caption.content, captionFilter)
+                                  }}
+                                />
+                              </div>
+                            ))
+                          ) : (
+                            <div className="no-captions">
+                              <div className="no-captions-icon">📝</div>
+                              <h3>자막이 없습니다</h3>
+                              <p>이 비디오에는 자막 정보가 없거나</p>
+                              <p>자막 파일을 읽을 수 없습니다.</p>
+                              <p className="no-captions-help">자막 파일 경로를 확인해주세요.</p>
+                            </div>
+                          )}
+                        </div>
+
                       </div>
                     </div>
                   </>
@@ -2420,4 +2687,4 @@ const styles = {
     flexWrap: 'wrap' as const,
     alignItems: 'center',
   },
-};
+  };
