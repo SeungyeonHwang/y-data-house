@@ -2186,7 +2186,7 @@ async fn convert_video_file(
        .stderr(Stdio::piped());
     
     // 명령어 실행
-    let mut child = cmd.spawn().map_err(|e| {
+    let child = cmd.spawn().map_err(|e| {
         state.is_converting.store(false, Ordering::Relaxed);
         format!("Python 프로세스 시작 실패: {}", e)
     })?;
