@@ -1564,18 +1564,6 @@ export default function App() {
                       {selectedVideo.upload_date && (
                         <p className="video-upload-date">업로드: {selectedVideo.upload_date}</p>
                       )}
-                      {videoUrl && (
-                        <div className="technical-info">
-                          <details>
-                            <summary>기술 정보</summary>
-                            <p><strong>URL:</strong> <code>{videoUrl}</code></p>
-                            <p><strong>컨테이너:</strong> {codecInfo || 'MP4'}</p>
-                            <p><strong>지원 기능:</strong> HTTP Range 요청, 206 Partial Content</p>
-                            <p><strong>서버 호환성:</strong> Safari, Chrome, Firefox, Edge 완벽 지원</p>
-                            <p><strong>코덱 참고:</strong> AV1 코덱은 일부 브라우저에서 지원하지 않을 수 있습니다.</p>
-                          </details>
-                        </div>
-                      )}
                     </div>
 
                     <div className="caption-search">
