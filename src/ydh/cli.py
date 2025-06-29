@@ -637,8 +637,8 @@ def config_validate():
 
 @main.command()
 @click.argument('video_path', type=click.Path(exists=True))
-@click.option('--quality', default='720p', type=click.Choice(['480p', '720p', '1080p', 'keep']),
-              help='변환할 화질 (기본: 720p)')
+@click.option('--quality', default='keep', type=click.Choice(['480p', '720p', '1080p', 'keep']),
+              help='변환할 화질 (기본: keep - 원본 해상도 유지)')
 @click.option('--codec', default='h264', type=click.Choice(['h264', 'h265']),
               help='변환할 코덱 (기본: h264)')
 @click.option('--backup/--no-backup', default=True, help='원본 파일 백업 여부')
@@ -669,7 +669,8 @@ def convert_single(video_path: str, quality: str, codec: str, backup: bool, prog
     
     # 변환 수행
     logger.info(f"🔄 비디오 변환 시작: {video_file.name}")
-    logger.info(f"📊 설정: {quality} 화질, {codec} 코덱")
+    quality_desc = "원본 해상도 유지" if quality == "keep" else f"{quality} 해상도로 변경"
+    logger.info(f"📊 설정: {quality_desc}, {codec} 코덱")
     
     try:
         success = _convert_video_file(video_file, quality, codec, backup, progress)

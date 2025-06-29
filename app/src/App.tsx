@@ -246,22 +246,36 @@ export default function App() {
         });
       }
       
-      // 변환 완료 시 비디오 URL 새로고침
+      // 변환 완료 시 비디오 URL 새로고침 및 모달 자동 닫기
       if (progress.status === "완료" && progress.progress === 100.0) {
         setTimeout(async () => {
           try {
             if (selectedVideo && videoServerPort) {
               const url = await invoke<string>('get_video_url', { videoPath: selectedVideo.video_path });
-              setVideoUrl(url);
+              setVideoUrl(url + '?t=' + Date.now()); // 캐시 방지를 위한 timestamp 추가
               setVideoError(null); // 에러 초기화
               setCodecInfo('MP4 컨테이너 (H.264 코덱)'); // 변환 완료 후 코덱 정보 업데이트
-              setConversionLogs(prev => [...prev, '🎬 변환된 비디오로 자동 업데이트되었습니다']);
+              
+              // 비디오 플레이어로 포커싱 및 스크롤
+              setTimeout(() => {
+                const videoElement = document.querySelector('.video-player') as HTMLVideoElement;
+                if (videoElement) {
+                  videoElement.scrollIntoView({ 
+                    behavior: 'smooth', 
+                    block: 'center' 
+                  });
+                  videoElement.focus();
+                }
+              }, 1000); // 비디오 로드 후 포커싱
             }
           } catch (error) {
             console.error('변환 후 비디오 URL 새로고침 실패:', error);
-            setConversionLogs(prev => [...prev, `⚠️ 비디오 URL 새로고침 실패: ${error}`]);
           }
-        }, 1000); // 1초 후 새로고침
+          
+          // 모달 바로 닫기
+          setShowConversionModal(false);
+          setConversionLoading(false);
+        }, 500); // 0.5초 후 바로 처리
       }
     });
     
@@ -400,7 +414,7 @@ export default function App() {
           errorMessage += '비디오 디코딩 오류 (AV1 코덱 호환성 문제일 수 있습니다)';
           break;
         case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-          errorMessage += '지원되지 않는 비디오 포맷 또는 코덱입니다 (AV1 코덱일 가능성 높음)';
+          errorMessage += '지원되지 않는 비디오 포맷 또는 코덱입니다';
           break;
         default:
           errorMessage += '알 수 없는 오류가 발생했습니다.';
@@ -425,7 +439,7 @@ export default function App() {
   };
 
   // 비디오 변환 함수
-  const convertVideo = async (quality: string = '720p', codec: string = 'h264', backup: boolean = false) => {
+  const convertVideo = async (quality: string = 'keep', codec: string = 'h264', backup: boolean = false) => {
     if (!selectedVideo) return;
     
     setConversionLoading(true);
@@ -1142,20 +1156,20 @@ export default function App() {
       {/* 비디오 변환 진행 상황 모달 */}
       {showConversionModal && (
         <div className="modal-overlay">
-          <div className="progress-modal">
-            <div className="modal-header">
-              <h3>🔄 비디오 변환 진행 상황</h3>
-              <div className="modal-header-actions">
+          <div className="minimal-progress-modal">
+            <div className="minimal-header">
+              <span className="progress-title">🔄 변환 중</span>
+              <div className="header-actions">
                 {conversionLoading && (
                   <button 
                     onClick={cancelConversion}
-                    className="btn-cancel"
+                    className="minimal-btn cancel"
                   >
-                    🛑 중단
+                    🛑
                   </button>
                 )}
                 <button 
-                  className="modal-close-btn"
+                  className="minimal-btn close"
                   onClick={() => setShowConversionModal(false)}
                   disabled={conversionLoading}
                 >
@@ -1165,53 +1179,27 @@ export default function App() {
             </div>
             
             {conversionProgress && (
-              <div className="progress-info">
-                <div className="progress-stats">
-                  <span>📊 상태: {conversionProgress.status}</span>
-                  <span>📈 진행률: {conversionProgress.progress > 0 ? conversionProgress.progress.toFixed(1) + '%' : '진행 중...'}</span>
-                  <span>🎯 파일: {selectedVideo?.title || conversionProgress.current_video}</span>
+              <div className="minimal-progress">
+                <div className="video-name">
+                  {selectedVideo?.title?.substring(0, 50) || conversionProgress.current_video}
+                  {(selectedVideo?.title?.length || 0) > 50 && '...'}
                 </div>
-                
-                {conversionProgress.progress > 0 && (
-                  <div className="progress-bar-container">
-                    <div 
-                      className="progress-bar"
-                      style={{ width: `${conversionProgress.progress}%` }}
-                    />
-                  </div>
-                )}
-                
-                <div className="current-log">
-                  <strong>현재 작업:</strong> {conversionProgress.log_message}
+                <div className="progress-bar-container">
+                  <div 
+                    className="progress-bar"
+                    style={{ 
+                      width: conversionProgress.progress > 0 ? `${conversionProgress.progress}%` : '20%',
+                      background: conversionProgress.progress > 0 ? '#4CAF50' : '#2196F3'
+                    }}
+                  />
+                </div>
+                <div className="progress-text">
+                  {conversionProgress.progress > 0 
+                    ? `${conversionProgress.progress.toFixed(1)}%` 
+                    : '진행 중...'}
                 </div>
               </div>
             )}
-            
-            <div className="logs-container">
-              <h4>📋 실시간 로그</h4>
-              <div className="logs-content">
-                {conversionLogs.map((log, index) => (
-                  <div key={index} className="log-line">
-                    {log}
-                  </div>
-                ))}
-              </div>
-            </div>
-            
-            <div className="modal-footer">
-              {conversionLoading ? (
-                <button className="btn-secondary" disabled>
-                  ⏳ 변환 중...
-                </button>
-              ) : (
-                <button 
-                  className="btn-primary"
-                  onClick={() => setShowConversionModal(false)}
-                >
-                  ✅ 완료
-                </button>
-              )}
-            </div>
           </div>
         </div>
       )}
@@ -1364,6 +1352,7 @@ export default function App() {
                     {videoUrl ? (
                       <div className="video-container">
                         <video
+                          key={videoUrl} // URL 변경 시 비디오 엘리먼트 강제 리렌더링
                           src={videoUrl}
                           controls
                           className="video-player"
@@ -1388,16 +1377,7 @@ export default function App() {
                                <div style={styles.errorContent}>
                                  <h4>비디오 재생 문제</h4>
                                  <p>{videoError}</p>
-                                 {videoError.includes('AV1') || videoError.includes('코덱') ? (
-                                   <div style={styles.codecHelp}>
-                                     <p><strong>해결 방법:</strong></p>
-                                     <ul>
-                                       <li>최신 브라우저를 사용하세요 (Chrome 90+, Firefox 88+)</li>
-                                       <li>하드웨어 가속을 활성화하세요</li>
-                                       <li>아래 버튼으로 시스템 플레이어에서 재생하세요</li>
-                                     </ul>
-                                   </div>
-                                 ) : null}
+
                                  <div style={styles.errorButtonGroup}>
                                    <button 
                                      onClick={openInSystemPlayer}
