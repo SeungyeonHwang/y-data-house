@@ -99,6 +99,13 @@ export default function App() {
   const [vectorSearchQuery, setVectorSearchQuery] = useState('');
   const [vectorSearchResults, setVectorSearchResults] = useState('');
   
+  // 키워드 검색 관련 상태
+  const [keywordSearchQuery, setKeywordSearchQuery] = useState('');
+  const [keywordSearchResults, setKeywordSearchResults] = useState<VideoInfo[]>([]);
+  const [filteredVideos, setFilteredVideos] = useState<VideoInfo[]>([]);
+  const [sortOrder, setSortOrder] = useState<'date' | 'title' | 'views' | 'duration'>('date');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  
   // AI 관련 상태
   const [aiQuestion, setAiQuestion] = useState('');
   const [aiAnswer, setAiAnswer] = useState('');
@@ -184,6 +191,11 @@ export default function App() {
       console.error('서버 상태 확인 실패:', error);
     }
   };
+
+  // 비디오 목록이 변경될 때 필터링된 목록 업데이트
+  useEffect(() => {
+    setFilteredVideos(videos);
+  }, [videos]);
 
   // 초기 데이터 로드
   useEffect(() => {
@@ -494,6 +506,75 @@ export default function App() {
     }
   };
 
+  // 키워드 검색
+  const performKeywordSearch = () => {
+    if (!keywordSearchQuery.trim()) {
+      setKeywordSearchResults([]);
+      setFilteredVideos(videos);
+      return;
+    }
+    
+    const query = keywordSearchQuery.toLowerCase();
+    const results = videos.filter(video => 
+      video.title.toLowerCase().includes(query) ||
+      video.channel.toLowerCase().includes(query) ||
+      (video.topic && video.topic.some(tag => tag.toLowerCase().includes(query))) ||
+      (video.excerpt && video.excerpt.toLowerCase().includes(query))
+    );
+    
+    setKeywordSearchResults(results);
+    setFilteredVideos(results);
+  };
+
+  // 정렬 함수
+  const sortVideos = (videosToSort: VideoInfo[], order: typeof sortOrder, direction: typeof sortDirection) => {
+    return [...videosToSort].sort((a, b) => {
+      let aValue: any, bValue: any;
+      
+      switch (order) {
+        case 'date':
+          aValue = a.upload_date ? new Date(a.upload_date).getTime() : 0;
+          bValue = b.upload_date ? new Date(b.upload_date).getTime() : 0;
+          break;
+        case 'title':
+          aValue = a.title.toLowerCase();
+          bValue = b.title.toLowerCase();
+          break;
+        case 'views':
+          aValue = a.view_count || 0;
+          bValue = b.view_count || 0;
+          break;
+        case 'duration':
+          aValue = a.duration_seconds || 0;
+          bValue = b.duration_seconds || 0;
+          break;
+        default:
+          return 0;
+      }
+      
+      if (direction === 'asc') {
+        return aValue > bValue ? 1 : aValue < bValue ? -1 : 0;
+      } else {
+        return aValue < bValue ? 1 : aValue > bValue ? -1 : 0;
+      }
+    });
+  };
+
+  // 정렬 변경 핸들러
+  const handleSortChange = (newOrder: typeof sortOrder) => {
+    if (newOrder === sortOrder) {
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortOrder(newOrder);
+      setSortDirection('desc');
+    }
+  };
+
+  // 정렬된 비디오 목록 가져오기
+  const getSortedVideos = () => {
+    return sortVideos(filteredVideos, sortOrder, sortDirection);
+  };
+
   // AI 질문
   const askAI = async () => {
     if (!aiQuestion.trim()) return;
@@ -664,13 +745,9 @@ export default function App() {
       return acc;
     }, {} as Record<string, VideoInfo[]>);
     
-    // 각 채널의 비디오를 날짜순으로 정렬 (최신이 맨 위)
+    // 각 채널의 비디오를 정렬 적용
     Object.keys(grouped).forEach(channel => {
-      grouped[channel].sort((a, b) => {
-        const dateA = a.upload_date ? new Date(a.upload_date).getTime() : 0;
-        const dateB = b.upload_date ? new Date(b.upload_date).getTime() : 0;
-        return dateB - dateA; // 내림차순 (최신이 위)
-      });
+      grouped[channel] = sortVideos(grouped[channel], sortOrder, sortDirection);
     });
     
     // 채널별로 정렬 (비디오 개수 내림차순)
@@ -1292,11 +1369,80 @@ export default function App() {
           <div className="tab-content">
             <h2 className="tab-title">🎬 비디오 목록</h2>
             
+            {/* 검색 및 정렬 컨트롤 */}
+            <div className="video-controls">
+              <div className="search-controls">
+                <div className="keyword-search">
+                  <input
+                    type="text"
+                    value={keywordSearchQuery}
+                    onChange={(e) => setKeywordSearchQuery(e.target.value)}
+                    placeholder="제목, 채널명, 태그로 검색..."
+                    className="keyword-search-input"
+                    onKeyPress={(e) => e.key === 'Enter' && performKeywordSearch()}
+                  />
+                  <button onClick={performKeywordSearch} className="keyword-search-button">
+                    🔍 검색
+                  </button>
+                  {keywordSearchQuery && (
+                    <button 
+                      onClick={() => {
+                        setKeywordSearchQuery('');
+                        setKeywordSearchResults([]);
+                        setFilteredVideos(videos);
+                      }} 
+                      className="clear-search-button"
+                    >
+                      ✕ 초기화
+                    </button>
+                  )}
+                </div>
+              </div>
+              
+              <div className="sort-controls">
+                <label className="sort-label">정렬:</label>
+                <button 
+                  onClick={() => handleSortChange('date')}
+                  className={`sort-button ${sortOrder === 'date' ? 'active' : ''}`}
+                >
+                  📅 날짜 {sortOrder === 'date' && (sortDirection === 'desc' ? '↓' : '↑')}
+                </button>
+                <button 
+                  onClick={() => handleSortChange('title')}
+                  className={`sort-button ${sortOrder === 'title' ? 'active' : ''}`}
+                >
+                  📝 제목 {sortOrder === 'title' && (sortDirection === 'desc' ? '↓' : '↑')}
+                </button>
+                <button 
+                  onClick={() => handleSortChange('views')}
+                  className={`sort-button ${sortOrder === 'views' ? 'active' : ''}`}
+                >
+                  👁️ 조회수 {sortOrder === 'views' && (sortDirection === 'desc' ? '↓' : '↑')}
+                </button>
+                <button 
+                  onClick={() => handleSortChange('duration')}
+                  className={`sort-button ${sortOrder === 'duration' ? 'active' : ''}`}
+                >
+                  ⏱️ 길이 {sortOrder === 'duration' && (sortDirection === 'desc' ? '↓' : '↑')}
+                </button>
+              </div>
+            </div>
+
+            {/* 검색 결과 표시 */}
+            {keywordSearchQuery && (
+              <div className="search-result-info">
+                <p>"{keywordSearchQuery}" 검색 결과: {filteredVideos.length}개 비디오</p>
+              </div>
+            )}
+            
             <div className="video-layout">
               <div className="video-sidebar">
-                <h3 className="sidebar-title">비디오 목록 ({videos.length}개)</h3>
+                <h3 className="sidebar-title">
+                  비디오 목록 ({filteredVideos.length}개
+                  {keywordSearchQuery && `/${videos.length}개`})
+                </h3>
                 <div className="video-list">
-                  {groupVideosByChannel(videos).map(([channelName, channelVideos]) => (
+                  {groupVideosByChannel(filteredVideos).map(([channelName, channelVideos]) => (
                     <div key={channelName} className="channel-group">
                       <div 
                         className="channel-group-header"
