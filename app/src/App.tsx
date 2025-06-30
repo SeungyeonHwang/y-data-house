@@ -62,7 +62,7 @@ interface CaptionLine {
   end_time?: number;
 }
 
-type TabType = 'dashboard' | 'channels' | 'videos' | 'search' | 'ai' | 'settings';
+type TabType = 'dashboard' | 'channels' | 'videos' | 'ai' | 'settings';
 
 // 절대경로로 변환하여 asset URL 생성
 async function toAssetUrl(vaultRelPath: string): Promise<string> {
@@ -209,7 +209,7 @@ export default function App() {
   const [highlightedCaptions, setHighlightedCaptions] = useState<Set<number>>(new Set());
   const [captionLoading, setCaptionLoading] = useState(false);
   const [currentCaptionIndex, setCurrentCaptionIndex] = useState(-1);
-
+  const [copySuccess, setCopySuccess] = useState(false);
   
   // Range 지원 비디오 서버 상태
   const [videoServerPort, setVideoServerPort] = useState<number | null>(null);
@@ -223,8 +223,6 @@ export default function App() {
   // 검색 관련 상태
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<CaptionLine[]>([]);
-  const [vectorSearchQuery, setVectorSearchQuery] = useState('');
-  const [vectorSearchResults, setVectorSearchResults] = useState('');
   
   // 키워드 검색 관련 상태
   const [keywordSearchQuery, setKeywordSearchQuery] = useState('');
@@ -692,22 +690,17 @@ export default function App() {
         .join('\n\n');
       
       await navigator.clipboard.writeText(captionsText);
+      setCopySuccess(true);
+      
+      // 1초 후 성공 상태 리셋
+      setTimeout(() => {
+        setCopySuccess(false);
+      }, 1000);
     } catch (error) {
       console.error('복사 실패:', error);
     }
   };
 
-  // 벡터 검색
-  const performVectorSearch = async () => {
-    if (!vectorSearchQuery.trim()) return;
-    
-    try {
-      const result = await invoke<string>('vector_search', { query: vectorSearchQuery });
-      setVectorSearchResults(result);
-    } catch (err) {
-      setVectorSearchResults(`에러: ${err}`);
-    }
-  };
 
   // 키워드 검색
   const performKeywordSearch = () => {
@@ -1495,7 +1488,6 @@ export default function App() {
           { id: 'dashboard', icon: '📊', label: '대시보드' },
           { id: 'channels', icon: '📺', label: '채널 관리' },
           { id: 'videos', icon: '🎬', label: '비디오 목록' },
-          { id: 'search', icon: '🔍', label: '벡터 검색' },
           { id: 'ai', icon: '🤖', label: 'AI 질문' },
           { id: 'settings', icon: '⚙️', label: '설정' }
         ].map(tab => (
@@ -1799,18 +1791,15 @@ export default function App() {
                         <div className="captions-header">
                           <div className="captions-title">
                             📋 자막 목록
-                            <span className="captions-count">
-                              {filteredCaptions.length > 0 ? filteredCaptions.length : captions.length}개
-                            </span>
                           </div>
                           <div className="captions-controls">
                             <button 
                               onClick={copyAllCaptions}
-                              className="caption-copy-button"
+                              className={`caption-copy-button ${copySuccess ? 'copied' : ''}`}
                               disabled={captions.length === 0 || captionLoading}
-                              title="전체 자막 복사"
+                              title={copySuccess ? "복사 완료!" : "전체 자막 복사"}
                             >
-                              📋
+                              {copySuccess ? '✅' : '📋'}
                             </button>
                           </div>
                         </div>
@@ -1871,35 +1860,6 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'search' && (
-          <div className="tab-content">
-            <h2 className="tab-title">🔍 벡터 검색</h2>
-            
-            <div className="search-section">
-              <h3 className="section-title">전체 비디오에서 검색</h3>
-              <div className="search-container">
-                <input
-                  type="text"
-                  value={vectorSearchQuery}
-                  onChange={(e) => setVectorSearchQuery(e.target.value)}
-                  placeholder="모든 비디오의 캡션에서 검색할 내용을 입력하세요..."
-                  className="search-input"
-                  onKeyPress={(e) => e.key === 'Enter' && performVectorSearch()}
-                />
-                <button onClick={performVectorSearch} className="search-button">
-                  🔍 벡터 검색
-                </button>
-              </div>
-              
-              {vectorSearchResults && (
-                <div className="search-results">
-                  <h4 className="results-title">검색 결과:</h4>
-                  <pre className="results-text">{vectorSearchResults}</pre>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {activeTab === 'ai' && (
           <div className="tab-content">

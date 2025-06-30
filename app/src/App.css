@@ -1381,7 +1381,9 @@ html, body {
   border: 1px solid #30363d;
   border-radius: 12px;
   overflow: hidden;
-  max-height: 600px; /* 높이 증가 */
+  max-height: 600px;
+  position: relative;
+  isolation: isolate;
 }
 
 .captions-header {
@@ -1449,6 +1451,25 @@ html, body {
   max-height: 500px;
   overflow-y: auto;
   padding: 8px;
+  overscroll-behavior: contain;
+}
+
+.captions-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.captions-content::-webkit-scrollbar-track {
+  background: #21262d;
+  border-radius: 3px;
+}
+
+.captions-content::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+
+.captions-content::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
 }
 
 .caption-item {
@@ -1622,8 +1643,6 @@ html, body {
   border-color: #ff7b72;
 }
 
-
-
 /* 빈 캡션 상태 */
 .no-captions {
   display: flex;
@@ -1658,152 +1677,6 @@ html, body {
   font-size: 12px;
   opacity: 0.8;
   font-style: italic;
-}
-
-/* 캡션 스크롤바 개선 */
-.captions-content::-webkit-scrollbar {
-  width: 6px;
-}
-
-.captions-content::-webkit-scrollbar-track {
-  background: #21262d;
-  border-radius: 3px;
-}
-
-.captions-content::-webkit-scrollbar-thumb {
-  background: #30363d;
-  border-radius: 3px;
-}
-
-.captions-content::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
-}
-
-/* 반응형 캡션 */
-@media (max-width: 768px) {
-  .captions-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 12px 16px;
-  }
-  
-  .captions-controls {
-    align-self: stretch;
-    justify-content: space-between;
-  }
-  
-  .caption-item {
-    padding: 10px 12px;
-  }
-  
-  .caption-text {
-    font-size: 13px;
-  }
-  
-  .captions-content {
-    max-height: 300px;
-    padding: 6px;
-  }
-  
-  .caption-filter-controls {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  
-  .caption-filter-input {
-    min-width: auto;
-  }
-}
-
-/* 로딩 상태 */
-.captions-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 20px;
-  color: #8b949e;
-}
-
-.captions-loading-spinner {
-  font-size: 24px;
-  margin-bottom: 12px;
-  animation: spin 1s linear infinite;
-}
-
-.captions-loading-text {
-  font-size: 14px;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-/* 호환성을 위한 기존 스타일 유지 */
-.caption-line {
-  margin-bottom: 12px;
-  line-height: 1.5;
-}
-
-.caption-line:last-child {
-  margin-bottom: 0;
-}
-
-/* 빈 캡션 상태 */
-.no-captions {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  color: #8b949e;
-  text-align: center;
-}
-
-.no-captions-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.7;
-}
-
-.no-captions h3 {
-  color: #f0f6fc;
-  font-size: 18px;
-  font-weight: 500;
-  margin-bottom: 8px;
-}
-
-.no-captions p {
-  margin-bottom: 4px;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.no-captions-help {
-  font-size: 12px;
-  opacity: 0.8;
-  font-style: italic;
-}
-
-/* 캡션 스크롤바 개선 */
-.captions-content::-webkit-scrollbar {
-  width: 6px;
-}
-
-.captions-content::-webkit-scrollbar-track {
-  background: #21262d;
-  border-radius: 3px;
-}
-
-.captions-content::-webkit-scrollbar-thumb {
-  background: #30363d;
-  border-radius: 3px;
-}
-
-.captions-content::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
 }
 
 /* 반응형 캡션 */
@@ -1907,10 +1780,512 @@ html, body {
   transform: translateY(-1px);
 }
 
+.caption-copy-button.copied {
+  background: #238636;
+  border-color: #2ea043;
+  animation: copySuccess 0.3s ease;
+}
+
+@keyframes copySuccess {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
 .caption-copy-button:disabled {
-  background: #6e7681;
-  border-color: #6e7681;
-  color: #8b949e;
+  opacity: 0.6;
   cursor: not-allowed;
-  transform: none;
+}
+
+/* 모달 스타일 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: modalFadeIn 0.2s ease-out;
+}
+
+@keyframes modalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.progress-modal {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow: hidden;
+  animation: modalSlideIn 0.3s ease-out;
+}
+
+@keyframes modalSlideIn {
+  from { 
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to { 
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.modal-header {
+  background: #0d1117;
+  border-bottom: 1px solid #30363d;
+  padding: 20px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-header h3 {
+  color: #f0f6fc;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close-btn:hover {
+  background: #30363d;
+  color: #f0f6fc;
+}
+
+.modal-close-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.progress-info {
+  padding: 24px;
+  border-bottom: 1px solid #30363d;
+}
+
+.progress-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.progress-stats span {
+  color: #f0f6fc;
+  font-size: 14px;
+  padding: 8px 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.progress-bar-container {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  height: 12px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #238636, #2ea043);
+  border-radius: 6px;
+  transition: width 0.3s ease;
+  min-width: 2px;
+}
+
+.progress-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.cancel-btn {
+  background: #da3633;
+  border: 1px solid #f85149;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background: #f85149;
+  transform: translateY(-1px);
+}
+
+.cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-cancel {
+  background: #da3633;
+  border: 1px solid #f85149;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-cancel:hover:not(:disabled) {
+  background: #f85149;
+}
+
+.btn-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.current-log {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 12px;
+  color: #f0f6fc;
+  font-size: 14px;
+  margin-top: 16px;
+}
+
+.logs-container {
+  padding: 0 24px 24px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.logs-container h4 {
+  color: #f0f6fc;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.logs-content {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  max-height: 250px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', monospace;
+}
+
+.logs-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.logs-content::-webkit-scrollbar-track {
+  background: #0d1117;
+  border-radius: 4px;
+}
+
+.logs-content::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.logs-content::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+.log-line {
+  color: #f0f6fc;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+  word-wrap: break-word;
+}
+
+.log-line:last-child {
+  margin-bottom: 0;
+}
+
+.modal-footer {
+  background: #0d1117;
+  border-top: 1px solid #30363d;
+  padding: 20px 24px;
+  display: flex;
+  justify-content: center;
+}
+
+.modal-footer .btn-primary,
+.modal-footer .btn-secondary {
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.modal-footer .btn-primary {
+  background: #238636;
+  color: white;
+}
+
+.modal-footer .btn-primary:hover:not(:disabled) {
+  background: #2ea043;
+}
+
+.modal-footer .btn-secondary {
+  background: #6e7681;
+  color: white;
+}
+
+.modal-footer .btn-secondary:hover:not(:disabled) {
+  background: #8b949e;
+}
+
+.modal-footer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 채널 선택 모달 스타일 */
+.channel-selector-content {
+  padding: 24px;
+}
+
+.channel-selector-header {
+  margin-bottom: 20px;
+}
+
+.channel-selector-header h4 {
+  color: #f0f6fc;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.channel-selector-header p {
+  color: #8b949e;
+  font-size: 14px;
+}
+
+.channel-selector-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.select-all-btn {
+  background: #1f6feb;
+  border: 1px solid #388bfd;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.select-all-btn:hover {
+  background: #388bfd;
+}
+
+.channel-checkboxes {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #0d1117;
+}
+
+.channel-checkbox-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.channel-checkbox-item:last-child {
+  border-bottom: none;
+}
+
+.channel-checkbox-item:hover {
+  background: #161b22;
+}
+
+.channel-checkbox-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #58a6ff;
+}
+
+.channel-checkbox-item label {
+  color: #f0f6fc;
+  font-size: 14px;
+  cursor: pointer;
+  flex: 1;
+}
+
+.modal-footer-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+/* 미니멀 진행 모달 (비디오 변환용) */
+.minimal-progress-modal {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+  width: 90%;
+  max-width: 400px;
+  overflow: hidden;
+  animation: modalSlideIn 0.3s ease-out;
+}
+
+.minimal-header {
+  background: #0d1117;
+  border-bottom: 1px solid #30363d;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.progress-title {
+  color: #f0f6fc;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.minimal-btn {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.minimal-btn:hover {
+  background: #30363d;
+  color: #f0f6fc;
+}
+
+.minimal-btn.cancel {
+  color: #f85149;
+}
+
+.minimal-btn.cancel:hover {
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.minimal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.minimal-progress {
+  padding: 20px;
+}
+
+.video-name {
+  color: #f0f6fc;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.progress-text {
+  color: #8b949e;
+  font-size: 12px;
+  text-align: center;
+  margin-top: 8px;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  .progress-modal {
+    width: 95%;
+    max-height: 90vh;
+  }
+  
+  .modal-header {
+    padding: 16px 20px;
+  }
+  
+  .progress-info {
+    padding: 20px;
+  }
+  
+  .progress-stats {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  
+  .logs-container {
+    padding: 0 20px 20px;
+  }
+  
+  .modal-footer {
+    padding: 16px 20px;
+  }
+  
+  .minimal-progress-modal {
+    width: 95%;
+  }
 }

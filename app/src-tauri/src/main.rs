@@ -114,40 +114,7 @@ struct ServerError;
 
 impl warp::reject::Reject for ServerError {}
 
-// Y-Data-House 및 yt-dlp 출력 파싱
-fn parse_ydh_output(line: &str) -> (f32, String, String) {
-    // yt-dlp 다운로드 진행률 파싱: [download] 15.2% of 125.45MiB at 1.23MiB/s ETA 01:23
-    if let Some(captures) = Regex::new(r"\[download\]\s+(\d+\.?\d*)%").unwrap().captures(line) {
-        if let Some(percent_match) = captures.get(1) {
-            if let Ok(percent) = percent_match.as_str().parse::<f32>() {
-                let status_msg = format!("📥 다운로드 중... {}%", percent as i32);
-                return (percent, String::new(), status_msg);
-            }
-        }
-    }
-    
-    // 비디오 제목 추출: [youtube] abc123: Downloading video title
-    if let Some(captures) = Regex::new(r"\[youtube\] [^:]+: (.+)").unwrap().captures(line) {
-        if let Some(title_match) = captures.get(1) {
-            let title = title_match.as_str().to_string();
-            let status_msg = format!("🎥 {}", title);
-            return (-1.0, title, status_msg);
-        }
-    }
-    
-    // Y-Data-House 로그 메시지 파싱
-    if line.contains("📺") || line.contains("🎬") || line.contains("📝") {
-        return (-1.0, String::new(), line.to_string());
-    }
-    
-    // 다운로드 완료 메시지
-    if line.contains("has already been downloaded") {
-        return (100.0, String::new(), "✅ 이미 다운로드됨".to_string());
-    }
-    
-    // 기본값
-    (-1.0, String::new(), String::new())
-}
+
 
 
 
@@ -571,9 +538,9 @@ async fn cancel_download(state: State<'_, DownloadState>) -> Result<(), String> 
     // 현재 실행 중인 프로세스 종료
     if let Ok(mut process_guard) = state.current_process.lock() {
         if let Some(mut child) = process_guard.take() {
-            if let Err(e) = child.kill() {
-                eprintln!("프로세스 종료 실패: {}", e);
-            }
+            // 프로세스 강제 종료
+            let _ = child.kill();
+            let _ = child.wait(); // 좀비 프로세스 방지
         }
     }
     
@@ -675,11 +642,13 @@ async fn download_videos_with_progress(window: Window, state: State<'_, Download
         let child = Command::new(&venv_python)
             .args(&["-m", "ydh", "ingest", &channel.url])
             .current_dir(&project_root)
+            .env("PYTHONUNBUFFERED", "1")        // Python 출력 버퍼링 방지
+            .env("PYTHONIOENCODING", "utf-8")    // UTF-8 인코딩 강제
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| e.to_string())?;
-            
+        
         // 현재 프로세스를 상태에 저장 (중단을 위해)
         {
             if let Ok(mut process_guard) = state.current_process.lock() {
@@ -687,177 +656,91 @@ async fn download_videos_with_progress(window: Window, state: State<'_, Download
             }
         }
         
-        // 프로세스를 다시 가져오기 (소유권 문제 해결)
-        let mut child = if let Ok(mut process_guard) = state.current_process.lock() {
+        // 프로세스를 다시 가져와서 처리
+        let child = if let Ok(mut process_guard) = state.current_process.lock() {
             process_guard.take().unwrap()
         } else {
             return Err("프로세스 접근 실패".to_string());
         };
         
-        // 실시간 출력 읽기 (stdout과 stderr 동시 처리)
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        
         // 🔥 NEW: 채널별 비디오 통계 추적
         let mut channel_total_videos = 0u32;
         let mut channel_downloaded_videos = 0u32;
-        let mut current_video_progress = 0.0f32;
         
-        // stdout과 stderr를 동시에 처리하는 스레드 생성
-        let window_clone = window.clone();
-        let channel_name = channel.name.clone();
-        let channel_index = index;
+        // 간단하게 프로세스 완료까지 대기하고 출력 읽기
+        let output = child.wait_with_output().map_err(|e| e.to_string())?;
         
-        // state를 클론하여 각 스레드에서 사용
-        let state_stdout = state.inner().clone();
-        let state_stderr = state.inner().clone();
-        
-        std::thread::scope(|s| {
-            // stdout 처리 스레드
-            if let Some(stdout) = stdout {
-                let window_stdout = window_clone.clone();
-                let channel_name_stdout = channel_name.clone();
-                s.spawn(move || {
-                    let reader = BufReader::new(stdout);
-                    for line in reader.lines() {
-                        if let Ok(line) = line {
-                            // 중단 신호 확인
-                            if state_stdout.is_cancelled.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            // 🔥 FIXED: 실제 비디오 수 파싱
-                            if line.contains("총") && line.contains("개 영상을 발견했습니다") {
-                                if let Some(captures) = Regex::new(r"총 (\d+)개 영상을 발견했습니다").unwrap().captures(&line) {
-                                    if let Some(count_match) = captures.get(1) {
-                                        if let Ok(count) = count_match.as_str().parse::<u32>() {
-                                            channel_total_videos = count;
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            // 🔥 FIXED: 다운로드 완료/실패 카운트
-                            if line.contains("다운로드 완료:") {
-                                if let Some(captures) = Regex::new(r"다운로드 완료: (\d+)개 성공").unwrap().captures(&line) {
-                                    if let Some(count_match) = captures.get(1) {
-                                        if let Ok(count) = count_match.as_str().parse::<u32>() {
-                                            channel_downloaded_videos = count;
-                                        }
-                                    }
-                                }
-                            }
-                            
-
-                            
-                            let (parsed_progress, video_title, status_msg) = parse_ydh_output(&line);
-                             
-                             // 개별 비디오 진행률 업데이트
-                             if parsed_progress >= 0.0 {
-                                 current_video_progress = parsed_progress;
-                             }
-                             
-                             // 전체 진행률 계산 개선
-                             let base_progress = (channel_index as f32 / total_channels as f32) * 100.0;
-                             let channel_progress_portion = if channel_total_videos > 0 {
-                                 let completed_ratio = (channel_downloaded_videos as f32 + current_video_progress / 100.0) / channel_total_videos as f32;
-                                 completed_ratio * (100.0 / total_channels as f32)
-                             } else {
-                                 (current_video_progress / 100.0) * (100.0 / total_channels as f32)
-                             };
-                             let total_progress = base_progress + channel_progress_portion;
-                             
-                             // 🔥 FIXED: 더 정확한 상태 판단
-                             let status = if parsed_progress > 0.0 {
-                                 "다운로드 중".to_string()
-                             } else if line.contains("채널 영상 목록 수집") {
-                                 "채널 분석 중".to_string()
-                             } else if line.contains("다운로드 완료") {
-                                 "완료".to_string()
-                             } else if line.contains("모든 영상이 이미 다운로드") {
-                                 "이미 완료".to_string()
-                             } else if line.contains("Extracting") || line.contains("Downloading") {
-                                 "영상 정보 수집 중".to_string()
-                             } else {
-                                 "진행 중".to_string()
-                             };
-                             
-                             let progress_update = DownloadProgress {
-                                 channel: channel_name_stdout.clone(),
-                                 status,
-                                 progress: total_progress.min(100.0),
-                                 current_video: if video_title.is_empty() { 
-                                     format!("채널: {}", channel_name_stdout) 
-                                 } else { 
-                                     video_title 
-                                 },
-                                 total_videos: channel_total_videos.max(1), // 최소 1개로 설정
-                                 completed_videos: total_videos_downloaded + channel_downloaded_videos,
-                                 log_message: if status_msg.is_empty() { line.clone() } else { status_msg },
-                             };
-                             
-                             let _ = window_stdout.emit("download-progress", &progress_update);
-                        }
-                    }
-                });
+        // stdout 처리 - 한 번에 모든 라인 처리
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        for line in stdout_str.lines() {
+            // 중단 신호 확인
+            if state.is_cancelled.load(Ordering::SeqCst) {
+                let cancel_progress = DownloadProgress {
+                    channel: channel.name.clone(),
+                    status: "중단됨".to_string(),
+                    progress: (index as f32 / total_channels as f32) * 100.0,
+                    current_video: "사용자 요청으로 중단".to_string(),
+                    total_videos: channel_total_videos,
+                    completed_videos: total_videos_downloaded,
+                    log_message: "🛑 다운로드가 중단되었습니다".to_string(),
+                };
+                let _ = window.emit("download-progress", &cancel_progress);
+                return Ok("다운로드가 중단되었습니다".to_string());
             }
             
-            // stderr 처리 스레드 (WARNING/INFO 레벨은 오류가 아님)
-            if let Some(stderr) = stderr {
-                let window_stderr = window_clone.clone();
-                let channel_name_stderr = channel_name.clone();
-                s.spawn(move || {
-                    let reader = BufReader::new(stderr);
-                    for line in reader.lines() {
-                        if let Ok(line) = line {
-                            // 중단 신호 확인
-                            if state_stderr.is_cancelled.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            // 🔥 FIXED: 실제 오류만 "오류" 상태로 처리
-                            let is_real_error = line.contains("ERROR") || line.contains("CRITICAL") || 
-                                               line.contains("Failed") || line.contains("Exception");
-                            
-                            let status = if is_real_error {
-                                "오류"
-                            } else {
-                                "진행 중" // WARNING/INFO는 정상 진행으로 처리
-                            };
-                            
-                            let (_parsed_progress, _video_title, status_msg) = parse_ydh_output(&line);
-                             
-                             // 모든 stderr 로그를 전송 (오류와 정보 구분)
-                             let log_prefix = if is_real_error { "❌" } else { "⚠️" };
-                             let log_progress = DownloadProgress {
-                                 channel: channel_name_stderr.clone(),
-                                 status: status.to_string(),
-                                 progress: (channel_index as f32 / total_channels as f32) * 100.0,
-                                 current_video: format!("채널: {}", channel_name_stderr),
-                                 total_videos: channel_total_videos.max(1),
-                                 completed_videos: total_videos_downloaded,
-                                 log_message: if status_msg.is_empty() { 
-                                     format!("{} {}", log_prefix, line) 
-                                 } else { 
-                                     format!("{} {}", log_prefix, status_msg) 
-                                 },
-                             };
-                             
-                             let _ = window_stderr.emit("download-progress", &log_progress);
+            // 로그 메시지 즉시 전송
+            let log_progress = DownloadProgress {
+                channel: channel.name.clone(),
+                status: "진행 중".to_string(),
+                progress: (index as f32 / total_channels as f32) * 50.0,
+                current_video: format!("📺 {}", channel.name),
+                total_videos: 1,
+                completed_videos: 0,
+                log_message: line.to_string(),
+            };
+            let _ = window.emit("download-progress", &log_progress);
+            
+            // 비디오 수 파싱
+            if line.contains("총") && line.contains("개 영상을 발견했습니다") {
+                if let Some(start) = line.find("총 ") {
+                    if let Some(end) = line[start..].find("개 영상을 발견했습니다") {
+                        let number_str = &line[start + 2..start + end].trim();
+                        if let Ok(count) = number_str.parse::<u32>() {
+                            channel_total_videos = count;
                         }
                     }
-                });
+                }
             }
-        });
+            
+            // 다운로드 완료 수 파싱
+            if line.contains("다운로드 완료:") && line.contains("개 성공") {
+                if let Some(start) = line.find("다운로드 완료: ") {
+                    if let Some(end) = line[start..].find("개 성공") {
+                        let number_str = &line[start + 7..start + end].trim();
+                        if let Ok(count) = number_str.parse::<u32>() {
+                            channel_downloaded_videos = count;
+                        }
+                    }
+                }
+            }
+        }
         
-        // 프로세스 완료 대기 (중단 신호 확인하면서)
-        let output = if state.is_cancelled.load(Ordering::SeqCst) {
-            // 중단된 경우 프로세스 종료 후 결과 반환
-            if let Err(e) = child.kill() {
-                eprintln!("프로세스 종료 실패: {}", e);
+        // stderr 처리 - 경고 및 오류 메시지
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        for line in stderr_str.lines() {
+            if !line.trim().is_empty() {
+                let stderr_progress = DownloadProgress {
+                    channel: channel.name.clone(),
+                    status: "정보".to_string(),
+                    progress: (index as f32 / total_channels as f32) * 50.0,
+                    current_video: format!("📺 {}", channel.name),
+                    total_videos: 1,
+                    completed_videos: 0,
+                    log_message: format!("⚠️ {}", line),
+                };
+                let _ = window.emit("download-progress", &stderr_progress);
             }
-            return Ok("다운로드가 중단되었습니다".to_string());
-        } else {
-            child.wait_with_output().map_err(|e| e.to_string())?
-        };
+        }
         
         // 🔥 FIXED: 채널별 통계 업데이트
         total_videos_processed += channel_total_videos;
@@ -962,11 +845,13 @@ async fn download_videos_with_progress_and_quality(window: Window, state: State<
         // 프론트엔드에 진행 상황 전송
         let _ = window.emit("download-progress", &progress);
         
-        // 🔥 NEW: 품질을 환경변수로 설정
+        // 🔥 NEW: 품질을 환경변수로 설정 + 버퍼링 방지
         let child = Command::new(&venv_python)
             .args(&["-m", "ydh", "ingest", &channel.url])
             .current_dir(&project_root)
             .env("YDH_VIDEO_QUALITY", &quality)  // 품질 환경변수 설정
+            .env("PYTHONUNBUFFERED", "1")        // Python 출력 버퍼링 방지
+            .env("PYTHONIOENCODING", "utf-8")    // UTF-8 인코딩 강제
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -979,155 +864,92 @@ async fn download_videos_with_progress_and_quality(window: Window, state: State<
             }
         }
         
-        // 프로세스를 다시 가져오기 (소유권 문제 해결)
-        let mut child = if let Ok(mut process_guard) = state.current_process.lock() {
+        // 프로세스를 다시 가져와서 처리
+        let child = if let Ok(mut process_guard) = state.current_process.lock() {
             process_guard.take().unwrap()
         } else {
             return Err("프로세스 접근 실패".to_string());
         };
         
-        // 실시간 출력 읽기 (stdout과 stderr 동시 처리)
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        
         // 🔥 NEW: 채널별 비디오 통계 추적
         let mut channel_total_videos = 0u32;
         let mut channel_downloaded_videos = 0u32;
-        let mut current_video_progress = 0.0f32;
         
-        // stdout과 stderr를 동시에 처리하는 스레드 생성
-        let window_clone = window.clone();
-        let channel_name = channel.name.clone();
-        let channel_index = index;
+        // 간단하게 프로세스 완료까지 대기하고 출력 읽기
+        let output = child.wait_with_output().map_err(|e| e.to_string())?;
         
-        // state를 클론하여 각 스레드에서 사용
-        let state_stdout = state.inner().clone();
-        let state_stderr = state.inner().clone();
-        
-        std::thread::scope(|s| {
-            // stdout 처리 스레드
-            if let Some(stdout) = stdout {
-                let window_stdout = window_clone.clone();
-                let channel_name_stdout = channel_name.clone();
-                s.spawn(move || {
-                    let reader = BufReader::new(stdout);
-                    for line in reader.lines() {
-                        if let Ok(line) = line {
-                            // 중단 신호 확인
-                            if state_stdout.is_cancelled.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            // 실제 비디오 수 파싱
-                            if line.contains("총") && line.contains("개 영상을 발견했습니다") {
-                                if let Some(captures) = regex::Regex::new(r"총 (\d+)개 영상을 발견했습니다").unwrap().captures(&line) {
-                                    if let Some(count_match) = captures.get(1) {
-                                        if let Ok(count) = count_match.as_str().parse::<u32>() {
-                                            channel_total_videos = count;
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            // 다운로드 완료/실패 카운트
-                            if line.contains("다운로드 완료:") {
-                                if let Some(captures) = regex::Regex::new(r"다운로드 완료: (\d+)개 성공").unwrap().captures(&line) {
-                                    if let Some(count_match) = captures.get(1) {
-                                        if let Ok(count) = count_match.as_str().parse::<u32>() {
-                                            channel_downloaded_videos = count;
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            let (parsed_progress, video_title, status_msg) = parse_ydh_output(&line);
-                             
-                             // 개별 비디오 진행률 업데이트
-                             if parsed_progress >= 0.0 {
-                                 current_video_progress = parsed_progress;
-                             }
-                             
-                             // 전체 진행률 계산 개선
-                             let base_progress = (channel_index as f32 / total_channels as f32) * 100.0;
-                             let channel_progress_portion = if channel_total_videos > 0 {
-                                 let completed_ratio = (channel_downloaded_videos as f32 + current_video_progress / 100.0) / channel_total_videos as f32;
-                                 completed_ratio * (100.0 / total_channels as f32)
-                             } else {
-                                 (current_video_progress / 100.0) * (100.0 / total_channels as f32)
-                             };
-                             let total_progress = base_progress + channel_progress_portion;
-                             
-                             // 더 정확한 상태 판단
-                             let status = if parsed_progress > 0.0 {
-                                 "다운로드 중".to_string()
-                             } else if line.contains("채널 영상 목록 수집") {
-                                 "채널 분석 중".to_string()
-                             } else if line.contains("다운로드 완료") {
-                                 "완료".to_string()
-                             } else if line.contains("모든 영상이 이미 다운로드") {
-                                 "이미 완료".to_string()
-                             } else if line.contains("Extracting") || line.contains("Downloading") {
-                                 "영상 정보 수집 중".to_string()
-                             } else {
-                                 "진행 중".to_string()
-                             };
-                             
-                             let progress_update = DownloadProgress {
-                                 channel: channel_name_stdout.clone(),
-                                 status,
-                                 progress: total_progress.min(100.0),
-                                 current_video: if video_title.is_empty() { 
-                                     format!("채널: {}", channel_name_stdout) 
-                                 } else { 
-                                     video_title 
-                                 },
-                                 total_videos: channel_total_videos.max(1), // 최소 1개로 설정
-                                 completed_videos: total_videos_downloaded + channel_downloaded_videos,
-                                 log_message: if status_msg.is_empty() { line.clone() } else { status_msg },
-                             };
-                             
-                             let _ = window_stdout.emit("download-progress", &progress_update);
-                        }
-                    }
-                });
+        // stdout 처리 - 한 번에 모든 라인 처리
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        for line in stdout_str.lines() {
+            // 중단 신호 확인
+            if state.is_cancelled.load(Ordering::SeqCst) {
+                let cancel_progress = DownloadProgress {
+                    channel: channel.name.clone(),
+                    status: "중단됨".to_string(),
+                    progress: (index as f32 / total_channels as f32) * 100.0,
+                    current_video: "사용자 요청으로 중단".to_string(),
+                    total_videos: channel_total_videos,
+                    completed_videos: total_videos_downloaded,
+                    log_message: "🛑 다운로드가 중단되었습니다".to_string(),
+                };
+                let _ = window.emit("download-progress", &cancel_progress);
+                return Ok("다운로드가 중단되었습니다".to_string());
             }
             
-            // stderr 처리 스레드 (WARNING/INFO 레벨은 오류가 아님)
-            if let Some(stderr) = stderr {
-                let window_stderr = window_clone.clone();
-                let channel_name_stderr = channel_name.clone();
-                s.spawn(move || {
-                    let reader = BufReader::new(stderr);
-                    for line in reader.lines() {
-                        if let Ok(line) = line {
-                            // 중단 신호 확인
-                            if state_stderr.is_cancelled.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            // 실제 오류만 "오류" 상태로 처리
-                            let is_real_error = line.contains("ERROR") || line.contains("CRITICAL") || 
-                                               line.contains("Failed") || line.contains("Exception");
-                            
-                            if is_real_error {
-                                let error_progress = DownloadProgress {
-                                    channel: channel_name_stderr.clone(),
-                                    status: "오류".to_string(),
-                                    progress: (channel_index as f32 / total_channels as f32) * 100.0,
-                                    current_video: "오류 발생".to_string(),
-                                    total_videos: channel_total_videos,
-                                    completed_videos: total_videos_downloaded + channel_downloaded_videos,
-                                    log_message: line.clone(),
-                                };
-                                let _ = window_stderr.emit("download-progress", &error_progress);
-                            }
+            // 로그 메시지 즉시 전송
+            let log_progress = DownloadProgress {
+                channel: channel.name.clone(),
+                status: "진행 중".to_string(),
+                progress: (index as f32 / total_channels as f32) * 50.0,
+                current_video: format!("📺 {}", channel.name),
+                total_videos: 1,
+                completed_videos: 0,
+                log_message: line.to_string(),
+            };
+            let _ = window.emit("download-progress", &log_progress);
+            
+            // 비디오 수 파싱
+            if line.contains("총") && line.contains("개 영상을 발견했습니다") {
+                if let Some(start) = line.find("총 ") {
+                    if let Some(end) = line[start..].find("개 영상을 발견했습니다") {
+                        let number_str = &line[start + 2..start + end].trim();
+                        if let Ok(count) = number_str.parse::<u32>() {
+                            channel_total_videos = count;
                         }
                     }
-                });
+                }
             }
-        });
-
-        // 프로세스 완료 대기
-        let exit_status = child.wait().map_err(|e| e.to_string())?;
-
+            
+            // 다운로드 완료 수 파싱
+            if line.contains("다운로드 완료:") && line.contains("개 성공") {
+                if let Some(start) = line.find("다운로드 완료: ") {
+                    if let Some(end) = line[start..].find("개 성공") {
+                        let number_str = &line[start + 7..start + end].trim();
+                        if let Ok(count) = number_str.parse::<u32>() {
+                            channel_downloaded_videos = count;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // stderr 처리 - 경고 및 오류 메시지
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        for line in stderr_str.lines() {
+            if !line.trim().is_empty() {
+                let stderr_progress = DownloadProgress {
+                    channel: channel.name.clone(),
+                    status: "정보".to_string(),
+                    progress: (index as f32 / total_channels as f32) * 50.0,
+                    current_video: format!("📺 {}", channel.name),
+                    total_videos: 1,
+                    completed_videos: 0,
+                    log_message: format!("⚠️ {}", line),
+                };
+                let _ = window.emit("download-progress", &stderr_progress);
+            }
+        }
+        
         // 업데이트된 통계를 전체 카운터에 반영
         total_videos_processed += channel_total_videos;
         total_videos_downloaded += channel_downloaded_videos;
@@ -1135,7 +957,7 @@ async fn download_videos_with_progress_and_quality(window: Window, state: State<
         // 채널 완료 상태 업데이트
         let final_progress = DownloadProgress {
             channel: channel.name.clone(),
-            status: if exit_status.success() { "완료".to_string() } else { "실패".to_string() },
+            status: if output.status.success() { "완료".to_string() } else { "실패".to_string() },
             progress: ((index + 1) as f32 / total_channels as f32) * 100.0,
             current_video: format!("{} 채널 처리 완료", channel.name),
             total_videos: total_videos_processed,
@@ -1146,7 +968,7 @@ async fn download_videos_with_progress_and_quality(window: Window, state: State<
         let _ = window.emit("download-progress", &final_progress);
 
         // 결과 저장
-        if exit_status.success() {
+        if output.status.success() {
             results.push(format!("✅ {}: {}개 영상 다운로드 완료", channel.name, channel_downloaded_videos));
         } else {
             results.push(format!("❌ {}: 다운로드 실패", channel.name));
