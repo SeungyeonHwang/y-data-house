@@ -95,71 +95,92 @@ class AnswerPipeline:
         )
     
     def _build_context(self, search_result: SearchResult, max_context_length: int = 2000) -> str:
-        """검색 결과를 컨텍스트로 구성 (토큰 효율성 고려)"""
+        """검색 결과로부터 컨텍스트 구성 (비디오 ID 포함)"""
+        if not search_result.documents:
+            return "검색된 문서가 없습니다."
+        
         context_parts = []
-        current_length = 0
+        for i, doc in enumerate(search_result.documents[:5]):  # 최대 5개
+            # 비디오 ID와 제목을 명확하게 표시
+            context_part = f"""
+📺 **영상 {i+1}** (ID: {doc.video_id})
+📝 **제목**: {doc.title}
+🔍 **유사도**: {doc.similarity:.3f}
+📖 **내용**: {doc.content[:400]}...
+---"""
+            context_parts.append(context_part)
         
-        for i, doc in enumerate(search_result.documents):
-            # 영상 정보 헤더 (간결)
-            header = f"[영상 {i+1}] {doc.title}"
-            
-            # 내용 요약 (토큰 절약)
-            content_preview = doc.content[:400] + "..." if len(doc.content) > 400 else doc.content
-            
-            part = f"{header}\n{content_preview}"
-            part_length = len(part)
-            
-            if current_length + part_length > max_context_length:
-                break
-                
-            context_parts.append(part)
-            current_length += part_length
+        context = "\n".join(context_parts)
         
-        return "\n\n".join(context_parts)
+        if len(context) > max_context_length:
+            context = context[:max_context_length] + "\n...(내용 생략)"
+        
+        return context
     
     def _get_json_schema_instruction(self, config: AnswerConfig) -> str:
-        """JSON 스키마 지시사항 생성"""
-        schema_fields = []
+        """JSON 스키마 지시사항 생성 (명확하고 강제적)"""
         
+        # 스타일별 예시
         if config.style == AnswerStyle.BULLET_POINTS:
-            schema_fields = [
-                f"answer: 최대 {config.max_bullets}개 bullet point로 구성된 메인 답변",
-                "key_points: 핵심 포인트 배열 (3-5개)",
-                "sources: 사용된 영상 ID 배열",
-                f"confidence: 답변 신뢰도 (0.0-1.0)",
-                "summary: 한 줄 핵심 요약"
-            ]
-        elif config.style == AnswerStyle.STRUCTURED:
-            schema_fields = [
-                "answer: 구조화된 답변 (헤딩과 섹션 포함)",
-                "key_points: 각 섹션별 핵심 포인트",
-                "sources: 사용된 영상 ID 배열", 
-                "confidence: 답변 신뢰도 (0.0-1.0)",
-                "summary: 전체 내용 요약"
-            ]
-        else:
-            schema_fields = [
-                "answer: 자연스러운 대화형 답변",
-                "key_points: 핵심 내용 요약",
-                "sources: 사용된 영상 ID 배열",
-                "confidence: 답변 신뢰도 (0.0-1.0)", 
-                "summary: 한 줄 요약"
-            ]
+            format_example = """
+{
+  "answer": "## 🎯 핵심 답변\\n\\n• **첫 번째 포인트**: 구체적인 설명 내용 [video_id_1]\\n• **두 번째 포인트**: 추가 설명 내용 [video_id_2]\\n• **세 번째 포인트**: 보충 설명 내용 [video_id_3]",
+  "key_points": [
+    "첫 번째 핵심 포인트 요약",
+    "두 번째 핵심 포인트 요약", 
+    "세 번째 핵심 포인트 요약"
+  ],
+  "sources": [
+    {"video_id": "20231201_investment_guide", "relevance": "투자 전략 설명"},
+    {"video_id": "20231215_market_analysis", "relevance": "시장 분석 내용"}
+  ],
+  "confidence": 0.85,
+  "summary": "3문장으로 요약한 핵심 내용"
+}"""
+        elif config.style == AnswerStyle.DETAILED_EXPLANATION:
+            format_example = """
+{
+  "answer": "## 📋 상세 분석\\n\\n**배경**: 상황 설명...\\n\\n**핵심 내용**: 자세한 설명... [video_id_1]\\n\\n**추가 고려사항**: 보충 설명... [video_id_2]",
+  "key_points": ["요점 1", "요점 2", "요점 3"],
+  "sources": [{"video_id": "actual_video_id", "relevance": "관련성 설명"}],
+  "confidence": 0.80,
+  "summary": "핵심 요약"
+}"""
+        else:  # SUMMARY
+            format_example = """
+{
+  "answer": "## 📝 요약\\n\\n핵심 내용을 간결하게 정리... [video_id_1]",
+  "key_points": ["요점 1", "요점 2"],
+  "sources": [{"video_id": "actual_video_id", "relevance": "관련성"}],
+  "confidence": 0.75,
+  "summary": "한 줄 요약"
+}"""
         
         return f"""
+## ⚠️ 응답 형식 (JSON 필수)
 
-## 📝 출력 형식 (JSON)
-반드시 다음 JSON 형식으로 응답하세요:
+**반드시 다음 JSON 형식으로만 응답하세요:**
+
 ```json
-{{
-  {chr(10).join([f'  "{field.split(":")[0]}": {field.split(":", 1)[1].strip()}' for field in schema_fields])}
-}}
+{format_example.strip()}
 ```
 
-JSON 외의 다른 텍스트는 출력하지 마세요."""
+## 📋 필수 요구사항:
+
+1. **JSON 형식 필수**: 다른 텍스트 없이 오직 JSON만 출력
+2. **실제 video_id 사용**: [video_id_1] 형태로 실제 영상 ID 표시
+3. **sources 배열**: 각 출처의 video_id와 relevance 명시
+4. **confidence**: 0.0~1.0 사이의 정확한 수치
+5. **한글 사용**: 모든 내용은 한글로 작성
+
+## 🎯 video_id 표시 방법:
+- 검색된 영상의 실제 ID 사용 (예: 20231201_investment_guide)
+- answer 필드에 [video_id] 형태로 출처 표시
+- sources 배열에 상세 정보 포함
+"""
     
     def _extract_json_from_response(self, response_text: str) -> Dict[str, Any]:
-        """LLM 응답에서 JSON 추출"""
+        """LLM 응답에서 JSON 추출 (강화된 파싱)"""
         try:
             # JSON 코드블록 찾기
             import re
@@ -175,26 +196,108 @@ JSON 외의 다른 텍스트는 출력하지 마세요."""
                 else:
                     raise ValueError("JSON 형식을 찾을 수 없습니다")
             
-            # JSON 파싱
-            parsed_json = json.loads(json_str)
+            # JSON 파싱 시도
+            try:
+                parsed_json = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                print(f"⚠️ JSON 파싱 실패: {e}")
+                # 불완전한 JSON 복구 시도
+                parsed_json = self._repair_incomplete_json(json_str, response_text)
             
-            # 필수 필드 검증
+            # 필수 필드 검증 및 타입 안전성 보장
             required_fields = ['answer', 'confidence', 'sources']
             for field in required_fields:
                 if field not in parsed_json:
-                    raise ValueError(f"필수 필드 누락: {field}")
+                    if field == 'answer':
+                        parsed_json[field] = response_text[:500] + "..." if len(response_text) > 500 else response_text
+                    elif field == 'confidence':
+                        parsed_json[field] = 0.5
+                    elif field == 'sources':
+                        parsed_json[field] = []
+            
+            # 타입 안전성 확보
+            if not isinstance(parsed_json.get('answer'), str):
+                parsed_json['answer'] = str(parsed_json.get('answer', ''))
+            
+            if not isinstance(parsed_json.get('confidence'), (int, float)):
+                try:
+                    parsed_json['confidence'] = float(parsed_json.get('confidence', 0.5))
+                except (ValueError, TypeError):
+                    parsed_json['confidence'] = 0.5
+            
+            if not isinstance(parsed_json.get('sources'), list):
+                parsed_json['sources'] = []
             
             return parsed_json
             
         except Exception as e:
             print(f"⚠️ JSON 파싱 실패: {e}")
-            # Fallback: 기본 구조로 응답
+            # 안전한 fallback 응답
+            clean_text = response_text.replace('\n', ' ').strip()
             return {
-                "answer": response_text,
+                "answer": clean_text[:1000] + "..." if len(clean_text) > 1000 else clean_text,
                 "key_points": [],
                 "sources": [],
-                "confidence": 0.5,
+                "confidence": 0.3,
                 "summary": "JSON 파싱 실패로 인한 기본 응답"
+            }
+    
+    def _repair_incomplete_json(self, json_str: str, full_response: str) -> Dict[str, Any]:
+        """불완전한 JSON 복구 시도"""
+        try:
+            # 기본 구조 추출
+            result = {}
+            
+            # answer 필드 추출
+            answer_match = re.search(r'"answer":\s*"([^"]*(?:\\.[^"]*)*)"', json_str, re.DOTALL)
+            if answer_match:
+                result['answer'] = answer_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+            else:
+                # answer 필드가 없으면 전체 응답에서 추출
+                result['answer'] = full_response[:800]
+            
+            # key_points 추출
+            key_points_match = re.search(r'"key_points":\s*\[(.*?)\]', json_str, re.DOTALL)
+            if key_points_match:
+                points_str = key_points_match.group(1)
+                # 개별 포인트 추출
+                points = re.findall(r'"([^"]*(?:\\.[^"]*)*)"', points_str)
+                result['key_points'] = [p.replace('\\"', '"') for p in points]
+            else:
+                result['key_points'] = []
+            
+            # sources 추출 (간단한 형태)
+            sources_match = re.search(r'"sources":\s*\[(.*?)\]', json_str, re.DOTALL)
+            if sources_match:
+                result['sources'] = []
+                # video_id 패턴 찾기
+                video_ids = re.findall(r'"video_id":\s*"([^"]*)"', sources_match.group(1))
+                for vid in video_ids:
+                    result['sources'].append({"video_id": vid, "relevance": "복구된 정보"})
+            else:
+                result['sources'] = []
+            
+            # confidence 추출
+            conf_match = re.search(r'"confidence":\s*([0-9.]+)', json_str)
+            if conf_match:
+                try:
+                    result['confidence'] = float(conf_match.group(1))
+                except:
+                    result['confidence'] = 0.5
+            else:
+                result['confidence'] = 0.5
+            
+            print(f"🔧 JSON 복구 성공: {len(result)} 필드")
+            return result
+            
+        except Exception as e:
+            print(f"⚠️ JSON 복구 실패: {e}")
+            return {
+                "answer": full_response[:800],
+                "key_points": [],
+                "sources": [],
+                "confidence": 0.3,
+                "summary": "JSON 복구 실패"
             }
     
     def _should_use_react(self, query: str, search_result: SearchResult) -> bool:
@@ -265,12 +368,16 @@ Final Answer: 다음 단계 결정
             return "현재 정보로 충분합니다."
     
     def _generate_initial_answer(self, request: AnswerRequest) -> str:
-        """초기 답변 생성"""
+        """초기 답변 생성 (강화된 JSON 생성)"""
         # 채널별 경량 프롬프트 로드
         channel_prompt = request.channel_prompt or self._load_channel_prompt(request.search_result.channel_name)
         
-        # 컨텍스트 구성
+        # 컨텍스트 구성 (비디오 ID 포함)
         context = self._build_context(request.search_result)
+        
+        # 검색된 비디오 ID 목록 생성
+        video_ids = [doc.video_id for doc in request.search_result.documents]
+        video_list = ", ".join(video_ids) if video_ids else "없음"
         
         # JSON 스키마 지시사항
         json_instruction = self._get_json_schema_instruction(request.config)
@@ -281,16 +388,22 @@ Final Answer: 다음 단계 결정
         user_prompt = f"""## 검색된 컨텍스트 ({request.search_result.channel_name} 채널)
 {context}
 
+## 사용 가능한 비디오 ID 목록
+{video_list}
+
 ## 사용자 질문
 {request.original_query}
 
-## 답변 요구사항
+## 답변 지시사항
 - {request.search_result.channel_name} 채널의 정보만 활용
 - {request.config.style.value} 스타일로 작성
-- 출처를 명확히 표시 ([영상 1], [영상 2] 등)
+- 실제 비디오 ID를 [video_id] 형태로 명시적 표시
+- 출처의 관련성을 구체적으로 설명
 - 모르는 내용은 추측하지 말고 "정보 부족" 명시
 
-{json_instruction}"""
+{json_instruction}
+
+**중요**: 반드시 위 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요."""
         
         try:
             start_time = time.time()
@@ -397,11 +510,27 @@ Final Answer: 다음 단계 결정
         # 3. JSON 파싱 및 검증
         answer_json = self._extract_json_from_response(final_answer)
         
-        # 4. 사용된 소스 추출
+        # 4. 사용된 소스 추출 (안전하게)
         sources_used = []
-        for doc in request.search_result.documents:
-            if any(doc.video_id in str(answer_json.get(field, '')) for field in ['answer', 'key_points']):
-                sources_used.append(doc.video_id)
+        try:
+            for doc in request.search_result.documents:
+                # 안전한 필드 값 검사
+                for field in ['answer', 'key_points']:
+                    field_value = answer_json.get(field, '')
+                    
+                    # 다양한 타입을 안전하게 문자열로 변환
+                    if isinstance(field_value, list):
+                        field_str = ' '.join(str(item) for item in field_value)
+                    elif isinstance(field_value, str):
+                        field_str = field_value
+                    else:
+                        field_str = str(field_value) if field_value else ''
+                    
+                    if doc.video_id in field_str:
+                        sources_used.append(doc.video_id)
+                        break  # 이미 찾았으므로 다음 문서로
+        except Exception as e:
+            print(f"⚠️ 소스 추출 오류: {e}")
         
         # 소스가 비어있으면 검색된 영상들 포함
         if not sources_used:
@@ -409,13 +538,34 @@ Final Answer: 다음 단계 결정
         
         generation_time = (time.time() - start_time) * 1000
         
-        # 토큰 사용량 추정 (간단한 계산)
-        token_usage = {
-            "prompt_tokens": len(request.original_query.split()) * 1.3,  # 근사치
-            "completion_tokens": len(answer_json.get('answer', '').split()) * 1.3,
-            "total_tokens": 0
-        }
-        token_usage["total_tokens"] = token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+        # 토큰 사용량 추정 (안전한 계산)
+        try:
+            # 원본 쿼리 토큰 수 계산
+            query_tokens = len(request.original_query.split()) * 1.3 if isinstance(request.original_query, str) else 10
+            
+            # 답변 토큰 수 계산 (안전하게)
+            answer_text = answer_json.get('answer', '')
+            if isinstance(answer_text, list):
+                # 리스트인 경우 문자열로 변환
+                answer_text = ' '.join(str(item) for item in answer_text)
+            elif not isinstance(answer_text, str):
+                # 문자열이 아닌 경우 문자열로 변환
+                answer_text = str(answer_text)
+            
+            completion_tokens = len(answer_text.split()) * 1.3 if answer_text else 5
+            
+            token_usage = {
+                "prompt_tokens": int(query_tokens),
+                "completion_tokens": int(completion_tokens),
+                "total_tokens": int(query_tokens + completion_tokens)
+            }
+        except Exception as e:
+            print(f"⚠️ 토큰 계산 오류: {e}, 기본값 사용")
+            token_usage = {
+                "prompt_tokens": 50,
+                "completion_tokens": 100,
+                "total_tokens": 150
+            }
         
         print(f"✅ 답변 생성 완료 ({generation_time:.1f}ms)")
         

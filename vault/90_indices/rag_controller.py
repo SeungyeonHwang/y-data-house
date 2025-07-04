@@ -20,7 +20,7 @@ from openai import OpenAI
 from schemas import (
     SearchQuery, SearchConfig, SearchResult,
     AnswerRequest, AnswerResponse, AnswerConfig, 
-    RAGResponse, QueryType
+    RAGResponse, QueryType, AnswerStyle
 )
 from search_pipeline import SearchPipeline
 from answer_pipeline import AnswerPipeline
@@ -76,18 +76,19 @@ class RAGController:
         
         # 기본 설정
         self.default_search_config = SearchConfig(
-            max_results=5,
+            max_results=10,
             enable_hyde=True,
             enable_rewrite=True,
             enable_rerank=True,
             rerank_threshold=0.3,
-            similarity_threshold=0.25
+            similarity_threshold=0.15
         )
         
         self.default_answer_config = AnswerConfig(
+            style=AnswerStyle.BULLET_POINTS,  # 기본 스타일 명시적 설정
             enable_self_refine=True,
             enable_react=False,  # 기본적으로 비활성화, 필요시에만
-            max_tokens=800,
+            max_tokens=1200,  # 800 → 1200으로 증가 (JSON 응답 고려)
             temperature=0.7
         )
         
@@ -97,24 +98,34 @@ class RAGController:
         """쿼리 타입에 따른 검색 설정 최적화"""
         config = SearchConfig(**self.default_search_config.dict())
         
-        # 단순한 쿼리는 경량화
+        # 단순한 쿼리는 경량화하지만 충분한 문서 확보
         if query_type == QueryType.SIMPLE:
             config.enable_rerank = False  # Re-rank 생략
-            config.max_results = 3        # 결과 수 제한
+            config.max_results = 8        # 3 → 8로 증가 (충분한 문서 확보)
+            config.similarity_threshold = 0.1  # 더 관대하게
             print("🔧 단순 쿼리: 경량 검색 모드")
             
         # 복잡한 쿼리는 전체 파이프라인 활용
         elif query_type == QueryType.COMPLEX:
             config.enable_rerank = True
-            config.max_results = 5
+            config.max_results = 10  # 5 → 10으로 증가
             config.rerank_threshold = 0.25  # 더 낮은 임계값
+            config.similarity_threshold = 0.2  # 중간 수준
             print("🔧 복잡 쿼리: 고품질 검색 모드")
             
-        # 사실 확인 쿼리는 정확도 우선
+        # 사실 확인 쿼리는 정확도 우선이지만 너무 엄격하지 않게
         elif query_type == QueryType.FACTUAL:
             config.enable_rerank = True
-            config.similarity_threshold = 0.35  # 더 높은 임계값
+            config.max_results = 8  # 기본값 유지하지만 더 많이
+            config.similarity_threshold = 0.25  # 0.35 → 0.25로 낮춤
             print("🔧 사실 확인: 정확도 우선 모드")
+            
+        # 분석적 쿼리는 폭넓은 검색
+        elif query_type == QueryType.ANALYTICAL:
+            config.enable_rerank = True
+            config.max_results = 12  # 6 → 12로 대폭 증가
+            config.similarity_threshold = 0.12  # 가장 관대하게
+            print("🔧 분석적 쿼리: 폭넓은 검색 모드")
         
         return config
     
@@ -138,16 +149,16 @@ class RAGController:
         return config
     
     def _should_use_fast_mode(self, query: str) -> bool:
-        """빠른 모드 사용 여부 결정 (성능 우선)"""
-        # 짧고 간단한 질문
-        if len(query) < 20:
+        """빠른 모드 사용 여부 결정 (성능 우선, 기준 완화)"""
+        # 매우 짧은 질문만 빠른 모드 (20자 → 10자로 변경)
+        if len(query) < 10:
             return True
         
-        # 특정 패턴 (정의, 설명 등)
+        # 명확히 간단한 패턴만 빠른 모드
         fast_patterns = [
-            r'\b(뭐|무엇|정의|설명|의미)\b',
-            r'\b(언제|어디|누구|몇)\b',
-            r'\b(간단히|빠르게|요약)\b'
+            r'^\s*(뭐|무엇|정의|설명|의미)\s*\??\s*$',  # 단일 단어 질문
+            r'^\s*(언제|어디|누구|몇)\s+.*\??\s*$',     # 간단한 의문사 질문
+            r'^\s*(간단히|빠르게|요약)\s+.*$'           # 명시적 요약 요청
         ]
         
         import re
@@ -186,32 +197,40 @@ class RAGController:
             if search_config is None:
                 search_config = self._optimize_search_config(query, search_query.query_type)
             
-            # 빠른 모드에서는 검색 단순화
+            # 빠른 모드에서는 검색 단순화하지만 충분한 결과 확보
             if fast_mode:
                 search_config.enable_rerank = False
                 search_config.enable_rewrite = False
-                search_config.max_results = 3
+                search_config.max_results = 8  # 3 → 8로 증가
             
             # 3. 검색 실행
             search_start = time.time()
             search_result = self.search_pipeline.search(search_query, search_config)
             search_time = (time.time() - search_start) * 1000
             
+            # 4. 스마트 fallback 처리
             if not search_result.documents:
-                return RAGResponse(
-                    query_id=query_id,
-                    channel_name=channel_name,
-                    original_query=query,
-                    answer=f"{channel_name} 채널에서 관련된 정보를 찾을 수 없습니다.",
-                    confidence=0.0,
-                    total_time_ms=(time.time() - start_time) * 1000,
-                    search_time_ms=search_time,
-                    answer_time_ms=0,
-                    documents_found=0,
-                    sources_used=[]
-                )
+                # 채널별 대표 정보 검색 시도
+                fallback_result = self._get_channel_fallback_info(channel_name, query)
+                
+                if fallback_result:
+                    print(f"🔄 Fallback 정보 제공: {len(fallback_result.documents)}개 문서")
+                    search_result = fallback_result
+                else:
+                    return RAGResponse(
+                        query_id=query_id,
+                        channel_name=channel_name,
+                        original_query=query,
+                        answer=self._generate_smart_fallback_answer(channel_name, query),
+                        confidence=0.3,
+                        total_time_ms=(time.time() - start_time) * 1000,
+                        search_time_ms=search_time,
+                        answer_time_ms=0,
+                        documents_found=0,
+                        sources_used=[]
+                    )
             
-            # 4. 답변 설정 최적화
+            # 5. 답변 설정 최적화
             if answer_config is None:
                 answer_config = self._optimize_answer_config(query, search_result)
             
@@ -219,9 +238,9 @@ class RAGController:
             if fast_mode:
                 answer_config.enable_self_refine = False
                 answer_config.enable_react = False
-                answer_config.max_tokens = 400
+                answer_config.max_tokens = 800  # 400 → 800으로 증가
             
-            # 5. 답변 생성 요청 구성
+            # 6. 답변 생성 요청 구성
             answer_request = AnswerRequest(
                 query_id=query_id,
                 original_query=query,
@@ -229,14 +248,14 @@ class RAGController:
                 config=answer_config
             )
             
-            # 6. 답변 생성 실행
+            # 7. 답변 생성 실행
             answer_start = time.time()
             answer_response = self.answer_pipeline.generate_answer(answer_request)
             answer_time = (time.time() - answer_start) * 1000
             
             total_time = (time.time() - start_time) * 1000
             
-            # 7. 최종 응답 구성
+            # 8. 최종 응답 구성
             rag_response = RAGResponse(
                 query_id=query_id,
                 channel_name=channel_name,
@@ -344,3 +363,85 @@ class RAGController:
             health_status["performance"]["cache_hit_rate"] = cache_stats["hit_rate"]
         
         return health_status 
+    
+    def _get_channel_fallback_info(self, channel_name: str, query: str) -> Optional[SearchResult]:
+        """채널별 대표 정보 검색 (관련성 낮은 질문에 대한 fallback)"""
+        try:
+            # 채널별 주요 키워드로 검색
+            channel_keywords = {
+                "일본 부동산 투자": ["부동산", "투자", "도쿄", "수익률", "아파트", "임대"],
+                "竹花貴騎 (Takaki Takehana)": ["마케팅", "비즈니스", "브랜딩", "전략", "성장"],
+                "竹花貴騎_Takaki_Takehana": ["마케팅", "비즈니스", "브랜딩", "전략", "성장"]
+            }
+            
+            keywords = channel_keywords.get(channel_name, ["정보", "가이드", "팁"])
+            
+            # 가장 관련성 높은 키워드로 검색
+            for keyword in keywords:
+                fallback_query = SearchQuery(
+                    query_id=str(uuid.uuid4())[:8],
+                    original_query=keyword,
+                    channel_name=channel_name
+                )
+                
+                fallback_config = SearchConfig(
+                    max_results=3,
+                    enable_hyde=False,
+                    enable_rewrite=False, 
+                    enable_rerank=False,
+                    similarity_threshold=0.1  # 매우 관대하게
+                )
+                
+                result = self.search_pipeline.search(fallback_query, fallback_config)
+                if result.documents:
+                    print(f"🎯 Fallback 키워드 '{keyword}'로 {len(result.documents)}개 문서 발견")
+                    return result
+            
+            return None
+            
+        except Exception as e:
+            print(f"⚠️ Fallback 검색 실패: {e}")
+            return None
+    
+    def _generate_smart_fallback_answer(self, channel_name: str, query: str) -> str:
+        """스마트 fallback 답변 생성"""
+        channel_info = {
+            "일본 부동산 투자": {
+                "focus": "일본 부동산 투자 전략과 시장 분석",
+                "topics": ["도쿄 아파트 투자", "임대 수익률", "대출 활용", "시장 동향", "투자 지역 선정"],
+                "suggestion": "도쿄 부동산 투자나 임대 수익률에 대해 질문해보세요"
+            },
+            "竹花貴騎 (Takaki Takehana)": {
+                "focus": "마케팅 전략과 비즈니스 성장",
+                "topics": ["디지털 마케팅", "브랜드 전략", "사업 확장", "고객 확보", "온라인 비즈니스"],
+                "suggestion": "마케팅 전략이나 비즈니스 성장에 대해 질문해보세요"
+            },
+            "竹花貴騎_Takaki_Takehana": {
+                "focus": "마케팅 전략과 비즈니스 성장", 
+                "topics": ["디지털 마케팅", "브랜드 전략", "사업 확장", "고객 확보", "온라인 비즈니스"],
+                "suggestion": "마케팅 전략이나 비즈니스 성장에 대해 질문해보세요"
+            }
+        }
+        
+        info = channel_info.get(channel_name, {
+            "focus": "다양한 주제",
+            "topics": ["정보", "가이드", "팁"],
+            "suggestion": "채널의 주요 주제에 대해 질문해보세요"
+        })
+        
+        return f"""## 🤖 {channel_name} 채널 안내
+        
+**현재 질문**: "{query}"
+
+죄송합니다. 직접적으로 관련된 정보를 찾지 못했습니다. 
+
+## 🎯 이 채널의 주요 주제
+**전문 분야**: {info['focus']}
+
+**다루는 주제들**:
+{chr(10).join(f'• {topic}' for topic in info['topics'])}
+
+## 💡 추천 질문
+{info['suggestion']}
+
+더 구체적인 질문을 해주시면 관련된 영상 내용을 바탕으로 상세한 답변을 드릴 수 있습니다.""" 

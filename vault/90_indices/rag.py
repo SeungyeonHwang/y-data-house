@@ -79,6 +79,92 @@ def chat_with_progress(query: str, channel_name: str, model: str = "deepseek-cha
     
     return response.answer
 
+def format_answer(answer: str, sources_used: List[str] = None) -> str:
+    """답변을 구조화하고 읽기 좋게 포맷팅"""
+    import json
+    import re
+    
+    try:
+        # JSON 형태인지 확인하고 파싱 시도
+        if answer.strip().startswith('{') and answer.strip().endswith('}'):
+            parsed = json.loads(answer)
+            
+            # JSON에서 구조화된 답변 생성
+            formatted_parts = []
+            
+            # 메인 답변
+            if 'answer' in parsed:
+                formatted_parts.append(parsed['answer'])
+            
+            # 핵심 포인트가 있으면 별도 섹션으로
+            if 'key_points' in parsed and parsed['key_points']:
+                formatted_parts.append("\n## 🎯 핵심 포인트")
+                for i, point in enumerate(parsed['key_points'], 1):
+                    formatted_parts.append(f"{i}. {point}")
+            
+            # 출처 정보
+            if 'sources' in parsed and parsed['sources']:
+                formatted_parts.append("\n## 📺 출처 영상")
+                if isinstance(parsed['sources'], list):
+                    for source in parsed['sources']:
+                        if isinstance(source, dict):
+                            video_id = source.get('video_id', 'unknown')
+                            relevance = source.get('relevance', '')
+                            formatted_parts.append(f"• **{video_id}**: {relevance}")
+                        else:
+                            formatted_parts.append(f"• {source}")
+                            
+            # 요약이 있으면 마지막에
+            if 'summary' in parsed and parsed['summary']:
+                formatted_parts.append(f"\n## 📝 요약\n{parsed['summary']}")
+            
+            return "\n".join(formatted_parts)
+            
+        # 리스트 형태인지 확인 (문자열로 표현된 리스트)
+        elif answer.strip().startswith('[') and answer.strip().endswith(']'):
+            try:
+                # 파이썬 리스트 파싱 시도
+                parsed_list = eval(answer)
+                if isinstance(parsed_list, list):
+                    formatted_parts = ["## 🎯 핵심 정보\n"]
+                    
+                    for i, item in enumerate(parsed_list, 1):
+                        # video_id 추출 및 포맷팅
+                        item_str = str(item)
+                        
+                        # [영상 X] 패턴을 실제 video_id로 교체
+                        if sources_used:
+                            for j, video_id in enumerate(sources_used):
+                                pattern = f"\\[영상 {j+1}\\]"
+                                replacement = f"[{video_id}]"
+                                item_str = re.sub(pattern, replacement, item_str)
+                        
+                        formatted_parts.append(f"**{i}.** {item_str}")
+                    
+                    # 출처 섹션 추가
+                    if sources_used:
+                        formatted_parts.append(f"\n## 📺 출처 영상")
+                        for video_id in sources_used:
+                            formatted_parts.append(f"• {video_id}")
+                    
+                    return "\n".join(formatted_parts)
+            except:
+                pass
+        
+        # 일반 텍스트 형태 - 그대로 반환하되 video_id 교체
+        formatted_answer = answer
+        if sources_used:
+            for i, video_id in enumerate(sources_used):
+                pattern = f"\\[영상 {i+1}\\]"
+                replacement = f"[{video_id}]"
+                formatted_answer = re.sub(pattern, replacement, formatted_answer)
+        
+        return formatted_answer
+        
+    except Exception as e:
+        print(f"⚠️ 답변 포맷팅 오류: {e}")
+        return answer  # 원본 그대로 반환
+
 def main():
     """메인 실행 함수 - 새로운 아키텍처 기반"""
     try:
@@ -216,10 +302,10 @@ def main():
         # RAG 실행
         if show_progress:
             answer = chat_with_progress(query, channel_name, model)
+            print(answer)
         else:
             controller = RAGController(CHROMA_PATH, model)
             response = controller.query(query, channel_name, fast_mode=fast_mode)
-            answer = response.answer
             
             print(f"\n🤖 **{channel_name} 채널 답변:**")
             print(f"⚡ 처리 시간: {response.total_time_ms:.1f}ms")
@@ -244,8 +330,10 @@ def main():
                 print("💾 캐시 활성화됨")
             
             print()  # 줄바꿈
-        
-        print(answer)
+            
+            # 답변 포맷팅 및 출력
+            formatted_answer = format_answer(response.answer, response.sources_used)
+            print(formatted_answer)
         
     except Exception as e:
         print(f"❌ 오류: {e}")
