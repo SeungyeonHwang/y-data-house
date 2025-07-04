@@ -74,14 +74,14 @@ class RAGController:
         except Exception as e:
             raise ValueError(f"❌ Answer Pipeline 초기화 실패: {e}")
         
-        # 기본 설정
+        # 기본 설정 (매우 관대하게)
         self.default_search_config = SearchConfig(
-            max_results=10,
+            max_results=15,  # 10 → 15로 증가
             enable_hyde=True,
             enable_rewrite=True,
             enable_rerank=True,
-            rerank_threshold=0.3,
-            similarity_threshold=0.15
+            rerank_threshold=0.2,  # 0.3 → 0.2로 낮춤
+            similarity_threshold=0.05  # 0.15 → 0.05로 대폭 낮춤 (매우 관대)
         )
         
         self.default_answer_config = AnswerConfig(
@@ -95,37 +95,37 @@ class RAGController:
         print("🎯 RAG Controller 초기화 완료")
     
     def _optimize_search_config(self, query: str, query_type: QueryType) -> SearchConfig:
-        """쿼리 타입에 따른 검색 설정 최적화"""
+        """쿼리 타입에 따른 검색 설정 최적화 (관대한 검색)"""
         config = SearchConfig(**self.default_search_config.dict())
         
         # 단순한 쿼리는 경량화하지만 충분한 문서 확보
         if query_type == QueryType.SIMPLE:
             config.enable_rerank = False  # Re-rank 생략
-            config.max_results = 8        # 3 → 8로 증가 (충분한 문서 확보)
-            config.similarity_threshold = 0.1  # 더 관대하게
-            print("🔧 단순 쿼리: 경량 검색 모드")
+            config.max_results = 12       # 8 → 12로 증가
+            config.similarity_threshold = 0.03  # 0.1 → 0.03으로 매우 관대하게
+            print("🔧 단순 쿼리: 관대한 경량 검색 모드")
             
         # 복잡한 쿼리는 전체 파이프라인 활용
         elif query_type == QueryType.COMPLEX:
             config.enable_rerank = True
-            config.max_results = 10  # 5 → 10으로 증가
-            config.rerank_threshold = 0.25  # 더 낮은 임계값
-            config.similarity_threshold = 0.2  # 중간 수준
-            print("🔧 복잡 쿼리: 고품질 검색 모드")
+            config.max_results = 15       # 10 → 15로 증가
+            config.rerank_threshold = 0.15  # 0.25 → 0.15로 낮춤
+            config.similarity_threshold = 0.08  # 0.2 → 0.08로 낮춤
+            print("🔧 복잡 쿼리: 관대한 고품질 검색 모드")
             
-        # 사실 확인 쿼리는 정확도 우선이지만 너무 엄격하지 않게
+        # 사실 확인 쿼리는 정확도 우선이지만 여전히 관대하게
         elif query_type == QueryType.FACTUAL:
             config.enable_rerank = True
-            config.max_results = 8  # 기본값 유지하지만 더 많이
-            config.similarity_threshold = 0.25  # 0.35 → 0.25로 낮춤
-            print("🔧 사실 확인: 정확도 우선 모드")
+            config.max_results = 12       # 8 → 12로 증가
+            config.similarity_threshold = 0.15  # 0.25 → 0.15로 낮춤
+            print("🔧 사실 확인: 관대한 정확도 우선 모드")
             
-        # 분석적 쿼리는 폭넓은 검색
+        # 분석적 쿼리는 가장 폭넓은 검색
         elif query_type == QueryType.ANALYTICAL:
             config.enable_rerank = True
-            config.max_results = 12  # 6 → 12로 대폭 증가
-            config.similarity_threshold = 0.12  # 가장 관대하게
-            print("🔧 분석적 쿼리: 폭넓은 검색 모드")
+            config.max_results = 20       # 12 → 20으로 대폭 증가
+            config.similarity_threshold = 0.02  # 0.12 → 0.02로 매우 관대하게
+            print("🔧 분석적 쿼리: 최대한 관대한 폭넓은 검색 모드")
         
         return config
     
@@ -197,11 +197,12 @@ class RAGController:
             if search_config is None:
                 search_config = self._optimize_search_config(query, search_query.query_type)
             
-            # 빠른 모드에서는 검색 단순화하지만 충분한 결과 확보
+            # 빠른 모드에서도 관대한 결과 확보
             if fast_mode:
                 search_config.enable_rerank = False
                 search_config.enable_rewrite = False
-                search_config.max_results = 8  # 3 → 8로 증가
+                search_config.max_results = 12    # 8 → 12로 증가
+                search_config.similarity_threshold = 0.03  # 매우 관대하게
             
             # 3. 검색 실행
             search_start = time.time()
@@ -385,7 +386,7 @@ class RAGController:
                 )
                 
                 fallback_config = SearchConfig(
-                    max_results=3,
+                    max_results=6,  # 3개 → 6개로 증가
                     enable_hyde=False,
                     enable_rewrite=False, 
                     enable_rerank=False,

@@ -100,7 +100,7 @@ class AnswerPipeline:
             return "검색된 문서가 없습니다."
         
         context_parts = []
-        for i, doc in enumerate(search_result.documents[:5]):  # 최대 5개
+        for i, doc in enumerate(search_result.documents[:8]):  # 최대 8개로 증가
             # 비디오 ID와 제목을 명확하게 표시
             context_part = f"""
 📺 **영상 {i+1}** (ID: {doc.video_id})
@@ -534,7 +534,7 @@ Final Answer: 다음 단계 결정
         
         # 소스가 비어있으면 검색된 영상들 포함
         if not sources_used:
-            sources_used = [doc.video_id for doc in request.search_result.documents[:3]]
+            sources_used = [doc.video_id for doc in request.search_result.documents[:6]]  # 3개 → 6개로 증가
         
         generation_time = (time.time() - start_time) * 1000
         

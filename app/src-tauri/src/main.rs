@@ -15,6 +15,7 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+use chrono;
 
 // HTTP 서버 관련 imports
 use warp::Filter;
@@ -1581,10 +1582,17 @@ async fn ask_ai_with_progress(window: Window, query: String, channel_name: Strin
     let reader = BufReader::new(stdout);
     let mut result = String::new();
     let mut is_final_answer = false;
+    let mut all_output = String::new(); // 전체 출력 수집 (fallback용)
 
     // 실시간 출력 처리
     for line in reader.lines() {
         let line = line.map_err(|e| e.to_string())?;
+        
+        // 모든 출력을 수집 (fallback용)
+        if !all_output.is_empty() {
+            all_output.push('\n');
+        }
+        all_output.push_str(&line);
         
         // 진행 상황 파싱
         if line.starts_with("PROGRESS:") {
@@ -1603,6 +1611,14 @@ async fn ask_ai_with_progress(window: Window, query: String, channel_name: Strin
                 progress: 100.0,
                 details: None,
             });
+            
+            // FINAL_ANSWER: 라인에 이미 답변이 포함된 경우 처리
+            if let Some(answer_content) = line.strip_prefix("FINAL_ANSWER:") {
+                let trimmed = answer_content.trim();
+                if !trimmed.is_empty() {
+                    result.push_str(trimmed);
+                }
+            }
         }
         // 최종 답변 수집
         else if is_final_answer {
@@ -1611,13 +1627,42 @@ async fn ask_ai_with_progress(window: Window, query: String, channel_name: Strin
             }
             result.push_str(&line);
         }
+        // PROGRESS 마커 없이 JSON이 바로 출력되는 경우 감지
+        else if line.trim().starts_with("{") && line.contains("\"answer\"") {
+            // JSON 응답으로 보이는 경우 수집 시작
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str(&line);
+            is_final_answer = true; // 이후 라인들도 수집
+        }
     }
 
     let status = child.wait().map_err(|e| e.to_string())?;
     
     if status.success() {
-        if result.is_empty() {
-            // 진행 상황 없이 기본 방식으로 실행된 경우
+        // 최적 응답 결정 로직
+        let final_result = if !result.is_empty() {
+            // FINAL_ANSWER 마커로 수집된 결과 우선 사용
+            result
+        } else if !all_output.is_empty() {
+            // 전체 출력에서 JSON 부분 추출 시도
+            if let Some(json_start) = all_output.find('{') {
+                if let Some(json_end) = all_output.rfind('}') {
+                    if json_end > json_start {
+                        // JSON 부분만 추출
+                        all_output[json_start..=json_end].to_string()
+                    } else {
+                        all_output
+                    }
+                } else {
+                    all_output
+                }
+            } else {
+                all_output
+            }
+        } else {
+            // fallback: 기본 방식으로 재실행
             let output = Command::new(&venv_python)
                 .args(&[rag_script.to_str().unwrap(), &query, &channel_name, "--model", &model])
                 .current_dir(&project_root)
@@ -1626,24 +1671,42 @@ async fn ask_ai_with_progress(window: Window, query: String, channel_name: Strin
                 .map_err(|e| e.to_string())?;
             
             if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+                String::from_utf8_lossy(&output.stdout).to_string()
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("DeepSeek RAG 질문 실패: {}", stderr))
+                return Err(format!("DeepSeek RAG 질문 실패: {}", stderr));
             }
-        } else {
-            Ok(result)
-        }
-    } else {
-        let stderr_output = Command::new(&venv_python)
-            .args(&[rag_script.to_str().unwrap(), &query, &channel_name, "--model", &model])
-            .current_dir(&project_root)
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| e.to_string())?;
+        };
         
-        let stderr = String::from_utf8_lossy(&stderr_output.stderr);
-        Err(format!("DeepSeek RAG 질문 실패: {}", stderr))
+        // 최종 결과 정리 (불필요한 PROGRESS 라인 제거)
+        let cleaned_result = final_result
+            .lines()
+            .filter(|line| !line.starts_with("PROGRESS:") && !line.starts_with("FINAL_ANSWER:"))
+            .collect::<Vec<&str>>()
+            .join("\n")
+            .trim()
+            .to_string();
+        
+        Ok(if cleaned_result.is_empty() { final_result } else { cleaned_result })
+    } else {
+        // 에러 발생 시 상세 에러 메시지 제공
+        let error_message = if all_output.is_empty() {
+            "Python 스크립트 실행 중 오류가 발생했습니다"
+        } else {
+            // 출력이 있는 경우 마지막 몇 줄을 에러 정보로 활용
+            let error_lines: Vec<&str> = all_output
+                .lines()
+                .filter(|line| line.contains("Error") || line.contains("Exception") || line.contains("Traceback"))
+                .collect();
+            
+            if !error_lines.is_empty() {
+                &error_lines.join("; ")
+            } else {
+                "Python 스크립트가 비정상적으로 종료되었습니다"
+            }
+        };
+        
+        Err(format!("DeepSeek RAG 질문 실패: {}", error_message))
     }
 }
 
@@ -2682,6 +2745,329 @@ fn parse_conversion_progress(line: &str) -> f32 {
     -1.0 // 진행률을 파싱할 수 없는 경우
 }
 
+#[derive(Serialize, Deserialize)]
+struct VideoDetails {
+    video_id: String,
+    title: String,
+    transcript: String,
+    duration: Option<u32>,
+    upload_date: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChatSession {
+    id: String,
+    timestamp: String,
+    query: String,
+    response: String,
+    channel: String,
+    model: String,
+}
+
+// 비디오 상세 정보 조회 (AIAnswerComponent에서 사용)
+#[command]
+async fn get_video_details(video_id: String, channel_name: String) -> Result<VideoDetails, String> {
+    let project_root = get_project_root();
+    let get_video_info_script = project_root.join("vault").join("90_indices").join("get_video_info.py");
+    
+    if !get_video_info_script.exists() {
+        return Err(format!("get_video_info.py 스크립트를 찾을 수 없습니다: {}", get_video_info_script.display()));
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    if !venv_python.exists() {
+        return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
+    }
+    
+    let output = Command::new(&venv_python)
+        .args(&[get_video_info_script.to_str().unwrap(), &video_id, &channel_name])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        // JSON 응답 파싱 시도
+        if let Ok(video_details) = serde_json::from_str::<VideoDetails>(&stdout) {
+            Ok(video_details)
+        } else {
+            // JSON 파싱 실패 시 기본 정보로 응답
+            Ok(VideoDetails {
+                video_id: video_id.clone(),
+                title: format!("영상 {}", video_id),
+                transcript: stdout.to_string(),
+                duration: None,
+                upload_date: None,
+                description: None,
+            })
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("비디오 정보 조회 실패: {}", stderr))
+    }
+}
+
+// 채널 목록 조회 (Python 스크립트 기반)
+#[command]
+async fn get_channels_from_script() -> Result<Vec<AIChannelInfo>, String> {
+    let project_root = get_project_root();
+    let list_channels_script = project_root.join("vault").join("90_indices").join("list_channels.py");
+    
+    if !list_channels_script.exists() {
+        return Err(format!("list_channels.py 스크립트를 찾을 수 없습니다: {}", list_channels_script.display()));
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    if !venv_python.exists() {
+        return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
+    }
+    
+    let output = Command::new(&venv_python)
+        .arg(&list_channels_script)
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        // JSON 응답 파싱 시도
+        if let Ok(channels) = serde_json::from_str::<Vec<AIChannelInfo>>(&stdout) {
+            Ok(channels)
+        } else {
+            // JSON 파싱 실패 시 기존 방식으로 파싱
+            let channels = parse_channel_list(&stdout);
+            Ok(channels)
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("채널 목록 조회 실패: {}", stderr))
+    }
+}
+
+// 채팅 세션 저장
+#[command]
+async fn save_chat_session(session_data: String) -> Result<(), String> {
+    let project_root = get_project_root();
+    let sessions_dir = project_root.join("vault").join("90_indices").join("search_sessions");
+    
+    // 디렉토리 생성 (존재하지 않는 경우)
+    std::fs::create_dir_all(&sessions_dir).map_err(|e| e.to_string())?;
+    
+    // 타임스탬프 기반 파일명 생성
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let session_file = sessions_dir.join(format!("session_{}.json", timestamp));
+    
+    // 세션 데이터 저장
+    std::fs::write(&session_file, &session_data).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// 최근 채팅 세션들 불러오기
+#[command]
+async fn load_recent_sessions(limit: Option<usize>) -> Result<Vec<String>, String> {
+    let project_root = get_project_root();
+    let sessions_dir = project_root.join("vault").join("90_indices").join("search_sessions");
+    
+    if !sessions_dir.exists() {
+        return Ok(vec![]);
+    }
+    
+    let limit = limit.unwrap_or(10); // 기본값 10개
+    let mut sessions = Vec::new();
+    
+    // 세션 파일들 수집
+    let mut session_files: Vec<_> = std::fs::read_dir(&sessions_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let filename = path.file_name()?.to_str()?;
+            
+            // session_으로 시작하고 .json으로 끝나는 파일만
+            if filename.starts_with("session_") && filename.ends_with(".json") {
+                Some((path, entry.metadata().ok()?.modified().ok()?))
+            } else {
+                None
+            }
+        })
+        .collect();
+    
+    // 수정 시간 기준 내림차순 정렬 (최신순)
+    session_files.sort_by(|a, b| b.1.cmp(&a.1));
+    
+    // 지정된 개수만큼 세션 데이터 로드
+    for (path, _) in session_files.into_iter().take(limit) {
+        if let Ok(session_data) = std::fs::read_to_string(&path) {
+            sessions.push(session_data);
+        }
+    }
+    
+    Ok(sessions)
+}
+
+// 모든 채팅 세션 파일 삭제
+#[command]
+async fn clear_all_sessions() -> Result<String, String> {
+    let project_root = get_project_root();
+    let sessions_dir = project_root.join("vault").join("90_indices").join("search_sessions");
+    
+    if !sessions_dir.exists() {
+        return Ok("삭제할 세션이 없습니다.".to_string());
+    }
+    
+    let mut deleted_count = 0;
+    
+    // 세션 파일들 삭제
+    let entries = std::fs::read_dir(&sessions_dir).map_err(|e| e.to_string())?;
+    
+    for entry in entries {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                // session_으로 시작하고 .json으로 끝나는 파일만 삭제
+                if filename.starts_with("session_") && filename.ends_with(".json") {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        eprintln!("세션 파일 삭제 실패 {}: {}", path.display(), e);
+                    } else {
+                        deleted_count += 1;
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(format!("{}개의 세션 파일을 삭제했습니다.", deleted_count))
+}
+
+// 모든 채널의 무결성 검사 (개별 채널별)
+#[command]
+async fn check_channel_integrity(channel_name: String) -> Result<String, String> {
+    let project_root = get_project_root();
+    let integrity_script = project_root.join("vault").join("90_indices").join("integrity_check.py");
+    
+    if !integrity_script.exists() {
+        return Err(format!("정합성 검사 스크립트를 찾을 수 없습니다: {}", integrity_script.display()));
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    if !venv_python.exists() {
+        return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
+    }
+    
+    let output = Command::new(&venv_python)
+        .args(&[integrity_script.to_str().unwrap(), "--channel", &channel_name])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(format!("✅ {} 채널 정합성 검사 완료\n{}", channel_name, stdout))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("{} 채널 정합성 검사 실패: {}", channel_name, stderr))
+    }
+}
+
+// RAG 컨트롤러 상태 조회
+#[command]
+async fn get_rag_controller_status() -> Result<String, String> {
+    let project_root = get_project_root();
+    let rag_script = project_root.join("vault").join("90_indices").join("rag.py");
+    
+    if !rag_script.exists() {
+        return Err("RAG 스크립트를 찾을 수 없습니다".to_string());
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[rag_script.to_str().unwrap(), "status"])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("RAG 상태 조회 실패: {}", stderr))
+    }
+}
+
+// RAG 캐시 정리
+#[command]
+async fn clear_rag_cache() -> Result<String, String> {
+    let project_root = get_project_root();
+    let rag_script = project_root.join("vault").join("90_indices").join("rag.py");
+    
+    if !rag_script.exists() {
+        return Err("RAG 스크립트를 찾을 수 없습니다".to_string());
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[rag_script.to_str().unwrap(), "clear-cache"])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("RAG 캐시 정리 실패: {}", stderr))
+    }
+}
+
+// 고급 검색 설정 (RAG 컨트롤러 기반)
+#[command]
+async fn advanced_rag_search(
+    query: String, 
+    channel_name: String, 
+    model: String,
+    search_config: Option<String>
+) -> Result<String, String> {
+    let project_root = get_project_root();
+    let rag_script = project_root.join("vault").join("90_indices").join("rag.py");
+    
+    if !rag_script.exists() {
+        return Err("RAG 스크립트를 찾을 수 없습니다".to_string());
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    
+    let mut args = vec![
+        rag_script.to_str().unwrap().to_string(),
+        query,
+        channel_name,
+        "--model".to_string(),
+        model
+    ];
+    
+    // 고급 검색 설정이 있는 경우 추가
+    if let Some(config) = search_config {
+        args.push("--config".to_string());
+        args.push(config);
+    }
+    
+    let output = Command::new(&venv_python)
+        .args(&args)
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("고급 RAG 검색 실패: {}", stderr))
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
@@ -2730,7 +3116,16 @@ fn main() {
             open_in_system_player,
             convert_video_file,
             cancel_conversion,
-            get_conversion_status
+            get_conversion_status,
+            get_video_details,
+            get_channels_from_script,
+            save_chat_session,
+            load_recent_sessions,
+            clear_all_sessions,
+            check_channel_integrity,
+            get_rag_controller_status,
+            clear_rag_cache,
+            advanced_rag_search
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

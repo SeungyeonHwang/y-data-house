@@ -45,7 +45,7 @@ class SearchQuery(BaseModel):
 
 class SearchConfig(BaseModel):
     """검색 설정"""
-    max_results: int = Field(default=5, description="최대 결과 수")
+    max_results: int = Field(default=8, description="최대 결과 수")  # 5개 → 8개로 증가
     enable_hyde: bool = Field(default=True, description="HyDE 활성화")
     enable_rewrite: bool = Field(default=True, description="Query Rewriting 활성화")
     enable_rerank: bool = Field(default=True, description="Re-ranking 활성화")

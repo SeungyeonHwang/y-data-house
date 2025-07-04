@@ -1217,49 +1217,54 @@
   }
 }
 
-/* Progress Section */
+/* Progress Section - Dark Mode */
 .progress-section {
-  background: #34495e;
-  border-radius: 8px;
-  padding: 16px;
-  margin: 16px 0;
+  margin: 1rem 0;
+  padding: 1rem;
+  background: linear-gradient(135deg, #34495e, #2c3e50);
+  border-radius: 12px;
   border: 1px solid #4a5f7a;
-  border-left: 4px solid #3498db;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.current-progress .progress-item {
+  margin-bottom: 1rem;
 }
 
 .progress-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 0.5rem;
 }
 
 .progress-step {
   font-weight: 600;
-  color: #3498db;
-  font-size: 14px;
+  font-size: 0.95rem;
+  color: #ecf0f1;
 }
 
 .progress-percentage {
-  font-size: 12px;
-  color: #95a5a6;
-  font-weight: 500;
+  font-weight: bold;
+  color: #3498db;
+  font-size: 0.9rem;
 }
 
 .progress-bar {
-  width: 100%;
-  height: 6px;
-  background: #2c3e50;
-  border-radius: 3px;
+  height: 8px;
+  background: #4a5f7a;
+  border-radius: 4px;
   overflow: hidden;
-  margin-bottom: 8px;
+  margin-bottom: 0.5rem;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
 }
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #3498db, #2980b9);
-  border-radius: 3px;
-  transition: width 0.3s ease;
+  background: linear-gradient(90deg, #3498db, #27ae60);
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(52, 152, 219, 0.5);
   position: relative;
 }
 
@@ -1268,10 +1273,10 @@
   position: absolute;
   top: 0;
   left: 0;
-  height: 100%;
-  width: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-  animation: shimmer 1.5s infinite;
+  bottom: 0;
+  right: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%);
+  animation: shimmer 2s infinite;
 }
 
 @keyframes shimmer {
@@ -1279,53 +1284,413 @@
   100% { transform: translateX(100%); }
 }
 
-.progress-message {
-  color: #ecf0f1;
-  font-size: 14px;
-  margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .progress-details {
-  color: #95a5a6;
-  font-size: 12px;
+  font-size: 0.85rem;
+  color: #bdc3c7;
   font-style: italic;
-  padding-left: 16px;
 }
 
-/* Enhanced Loading States */
-.submit-button:disabled .loading-spinner {
-  margin-right: 8px;
+/* AI 사고과정 히스토리 - Dark Mode */
+.progress-history {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #4a5f7a;
 }
 
-/* Progress Animation Classes */
-.progress-section.step-search {
-  border-left-color: #e74c3c;
+.progress-history h4 {
+  color: #ecf0f1;
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
 }
 
-.progress-section.step-hyde {
-  border-left-color: #f39c12;
-}
-
-.progress-section.step-rewrite {
-  border-left-color: #f1c40f;
-}
-
-.progress-section.step-rerank {
-  border-left-color: #9b59b6;
-}
-
-.progress-section.step-complete {
-  border-left-color: #27ae60;
-}
-
-/* Enhanced Form Actions with Progress */
-.form-actions {
+.progress-steps {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.progress-step-item {
+  display: flex;
   align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  background: rgba(52, 73, 94, 0.7);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  border: 1px solid #4a5f7a;
+}
+
+.step-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #27ae60;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+
+.step-content {
+  flex: 1;
+}
+
+.step-message {
+  font-weight: 500;
+  color: #ecf0f1;
+}
+
+.step-details {
+  font-size: 0.75rem;
+  color: #bdc3c7;
+  margin-top: 0.2rem;
+}
+
+.step-time {
+  font-size: 0.75rem;
+  color: #bdc3c7;
+  font-weight: 500;
+}
+
+/* 단계별 색상 */
+.step-init .step-icon { background: #6c757d; }
+.step-analysis .step-icon { background: #17a2b8; }
+.step-search .step-icon { background: #007bff; }
+.step-hyde .step-icon { background: #6610f2; }
+.step-rewrite .step-icon { background: #e83e8c; }
+.step-merge .step-icon { background: #fd7e14; }
+.step-context .step-icon { background: #20c997; }
+.step-thinking .step-icon { background: #ffc107; }
+.step-processing .step-icon { background: #6f42c1; }
+.step-complete .step-icon { background: #28a745; }
+
+/* 세션 저장 안내 - Dark Mode */
+.session-info {
+  font-size: 0.8rem;
+  color: #bdc3c7;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(52, 73, 94, 0.3);
+  border-radius: 6px;
+  text-align: center;
+  border: 1px solid #4a5f7a;
+}
+
+/* 신뢰도 표시 - Dark Mode */
+.confidence-indicator {
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 12px;
+  background: rgba(52, 73, 94, 0.9);
+  border: 1px solid currentColor;
+}
+
+.documents-found {
+  font-size: 0.85rem;
+  color: #bdc3c7;
+  background: rgba(52, 73, 94, 0.3);
+  padding: 0.25rem 0.5rem;
+  border-radius: 12px;
+}
+
+/* 관련 영상 섹션 개선 - Dark Mode */
+.sources-section {
+  margin-top: 1.5rem;
+  border-top: 2px solid #4a5f7a;
+  padding-top: 1.5rem;
+}
+
+.sources-title {
+  color: #ecf0f1;
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.sources-subtitle {
+  font-size: 0.8rem;
+  color: #bdc3c7;
+  font-weight: 400;
+  font-style: italic;
+}
+
+/* 소스 아이템 개선 - Dark Mode */
+.source-item {
+  border: 1px solid #4a5f7a;
+  border-radius: 12px;
+  margin-bottom: 1rem;
+  background: #34495e;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.source-item:hover {
+  box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
+  transform: translateY(-1px);
+  border-color: #3498db;
+}
+
+.source-header {
+  padding: 1rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.source-header:hover {
+  background: rgba(52, 152, 219, 0.1);
+}
+
+.source-main {
+  flex: 1;
+}
+
+.source-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.source-expand-icon {
+  color: #0066cc;
+  font-weight: bold;
+  font-size: 0.9rem;
+  width: 12px;
+  text-align: center;
+}
+
+.source-title {
+  flex: 1;
+  font-weight: 600;
+  color: #333;
+  font-size: 0.95rem;
+}
+
+.source-relevance {
+  background: linear-gradient(135deg, #28a745, #20c997);
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.source-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  font-size: 0.8rem;
+  color: #6c757d;
+}
+
+.source-video-id {
+  background: rgba(52, 152, 219, 0.2);
+  color: #3498db;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  font-family: monospace;
+  font-weight: 500;
+}
+
+.source-timestamp {
+  color: #e74c3c;
+  font-weight: 500;
+}
+
+.source-excerpt {
+  flex: 1;
+  color: #bdc3c7;
+}
+
+.source-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.video-link-button {
+  background: #3498db;
+  color: white;
+  border: none;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: background 0.2s ease;
+}
+
+.video-link-button:hover {
+  background: #2980b9;
+}
+
+/* 확장된 비디오 상세 정보 - Dark Mode */
+.video-details-expanded {
+  border-top: 1px solid #4a5f7a;
+  background: rgba(44, 62, 80, 0.8);
+  animation: expandDown 0.3s ease;
+}
+
+@keyframes expandDown {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 500px; }
+}
+
+.video-loading {
+  padding: 2rem;
+  text-align: center;
+  color: #bdc3c7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.video-details {
+  padding: 1.5rem;
+}
+
+.video-info {
+  margin-bottom: 1.5rem;
+}
+
+.video-meta {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.video-duration {
+  color: #e74c3c;
+  font-weight: 500;
+}
+
+.video-date {
+  color: #bdc3c7;
+}
+
+.video-description {
+  background: rgba(52, 73, 94, 0.8);
+  padding: 1rem;
+  border-radius: 8px;
+  border-left: 4px solid #3498db;
+}
+
+.video-description h5 {
+  margin: 0 0 0.5rem 0;
+  color: #ecf0f1;
+  font-size: 0.9rem;
+}
+
+.video-description p {
+  margin: 0;
+  color: #bdc3c7;
+  line-height: 1.5;
+  font-size: 0.85rem;
+}
+
+/* 자막 섹션 - Dark Mode */
+.video-transcript {
+  background: rgba(52, 73, 94, 0.9);
+  border-radius: 8px;
+  border: 1px solid #4a5f7a;
+}
+
+.transcript-header {
+  display: flex;
   justify-content: space-between;
-  margin-top: 16px;
+  align-items: center;
+  padding: 1rem 1rem 0.5rem 1rem;
+  border-bottom: 1px solid #4a5f7a;
+}
+
+.transcript-header h5 {
+  margin: 0;
+  color: #ecf0f1;
+  font-size: 0.9rem;
+}
+
+.copy-transcript-button {
+  background: #5d6d7e;
+  color: white;
+  border: none;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: background 0.2s ease;
+}
+
+.copy-transcript-button:hover {
+  background: #4a5f7a;
+}
+
+.transcript-content {
+  padding: 1rem;
+  line-height: 1.6;
+  font-size: 0.85rem;
+  color: #bdc3c7;
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(44, 62, 80, 0.5);
+}
+
+/* 비디오 참조 링크 스타일 - Dark Mode */
+.video-reference {
+  color: #3498db;
+  background: rgba(52, 152, 219, 0.2);
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  font-family: monospace;
+}
+
+.video-reference:hover {
+  background: rgba(52, 152, 219, 0.3);
+  color: #2980b9;
+}
+
+/* 처리 시간 표시 - Dark Mode */
+.processing-time {
+  color: #bdc3c7;
+  font-size: 0.8rem;
+}
+
+/* 반응형 개선 */
+@media (max-width: 768px) {
+  .source-title-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  
+  .source-details {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  
+  .video-meta {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .progress-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
 }

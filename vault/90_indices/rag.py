@@ -63,21 +63,75 @@ def list_available_channels() -> List[Dict[str, Any]]:
         return []
 
 def chat_with_progress(query: str, channel_name: str, model: str = "deepseek-chat") -> str:
-    """진행 상황 출력과 함께 RAG 실행 (기존 호환성)"""
+    """진행 상황 상세 출력과 함께 RAG 실행"""
+    import time
+    import sys
+    
+    print(f"PROGRESS:{json.dumps({'step': 'init', 'message': '🔍 검색 준비 중...', 'progress': 0.0, 'details': f'채널: {channel_name} | 모델: {model}'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.3)  # 사용자가 볼 수 있도록 지연
+    
+    print(f"PROGRESS:{json.dumps({'step': 'init', 'message': '🚀 RAG 시스템 초기화 중...', 'progress': 5.0, 'details': f'모델: {model}, 채널: {channel_name}'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.4)
+    
     controller = RAGController(CHROMA_PATH, model)
     
-    # 진행 상황 출력
-    print(f"PROGRESS:{json.dumps({'step': '벡터 검색', 'message': f'🔍 {channel_name} 채널에서 벡터 검색 중...', 'progress': 10.0, 'details': f'질문: {query[:50]}...'}, ensure_ascii=False)}")
+    print(f"PROGRESS:{json.dumps({'step': 'query_analysis', 'message': '🧠 질문 분석 중...', 'progress': 10.0, 'details': f'질문 길이: {len(query)}자, 복잡도 판단 중'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.5)
+    
+    # 진행 상황을 더 세분화하여 출력
+    print(f"PROGRESS:{json.dumps({'step': 'vector_search', 'message': '🔍 벡터 데이터베이스 검색 중...', 'progress': 20.0, 'details': '유사한 콘텐츠 찾는 중...'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.6)
+    
+    print(f"PROGRESS:{json.dumps({'step': 'hyde_generation', 'message': '🎯 HyDE 문서 생성 중...', 'progress': 35.0, 'details': '가상 답변 문서로 검색 정확도 향상 중...'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.7)
+    
+    print(f"PROGRESS:{json.dumps({'step': 'query_rewrite', 'message': '🔄 쿼리 재작성 중...', 'progress': 50.0, 'details': '검색 최적화를 위한 질문 재구성 중...'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.6)
+    
+    print(f"PROGRESS:{json.dumps({'step': 'search_merge', 'message': '🔗 검색 결과 병합 중...', 'progress': 65.0, 'details': '중복 제거 및 관련성 순으로 정렬 중...'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.5)
+    
+    print(f"PROGRESS:{json.dumps({'step': 'context_build', 'message': '📖 컨텍스트 구성 중...', 'progress': 75.0, 'details': '찾은 정보를 AI가 이해할 수 있도록 정리 중...'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.4)
+    
+    print(f"PROGRESS:{json.dumps({'step': 'ai_thinking', 'message': '🤖 AI 답변 생성 중...', 'progress': 85.0, 'details': 'DeepSeek이 종합적으로 분석하여 답변 작성 중...'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.8)  # AI 답변 생성은 조금 더 길게
     
     # RAG 실행
     response = controller.query(query, channel_name)
     
-    print(f"PROGRESS:{json.dumps({'step': '답변 생성', 'message': '🤖 DeepSeek으로 답변 생성 중...', 'progress': 80.0, 'details': f'검색 결과: {response.documents_found}개'}, ensure_ascii=False)}")
+    # 검색 결과 상세 정보 포함
+    print(f"PROGRESS:{json.dumps({'step': 'result_processing', 'message': '✨ 답변 후처리 중...', 'progress': 95.0, 'details': f'검색된 문서: {response.documents_found}개, 신뢰도: {response.confidence:.2f}'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.3)
     
-    print(f"PROGRESS:{json.dumps({'step': '완료', 'message': '✅ 답변 생성 완료', 'progress': 100.0, 'details': None}, ensure_ascii=False)}")
+    print(f"PROGRESS:{json.dumps({'step': 'complete', 'message': '✅ 답변 생성 완료', 'progress': 100.0, 'details': f'총 처리시간: {response.total_time_ms:.1f}ms, 사용된 소스: {len(response.sources_used)}개'}, ensure_ascii=False)}")
+    sys.stdout.flush()
+    time.sleep(0.2)
+    
     print("FINAL_ANSWER:")
     
-    return response.answer
+    # 소스 정보도 함께 반환하도록 개선
+    result_data = {
+        "answer": response.answer,
+        "sources": response.sources_used,
+        "confidence": response.confidence,
+        "documents_found": response.documents_found,
+        "processing_time": response.total_time_ms,
+        "search_quality": response.search_quality,
+        "debug_info": response.debug_info
+    }
+    
+    return json.dumps(result_data, ensure_ascii=False)
 
 def format_answer(answer: str, sources_used: List[str] = None) -> str:
     """답변을 구조화하고 읽기 좋게 포맷팅"""
