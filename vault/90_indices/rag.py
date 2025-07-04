@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from local_gemini import LocalGeminiRAGInterface
+from openai import OpenAI
 import re
 from prompt_manager import PromptManager
 
@@ -39,8 +39,18 @@ PROMPT_TEMPLATE = """당신은 일본 부동산 투자 전문 AI 어시스턴트
 # 환경변수 로드
 load_dotenv()
 
-# 로컬 gemini 인터페이스 초기화
-local_gemini = LocalGeminiRAGInterface()
+# DeepSeek 클라이언트 초기화
+def create_deepseek_client():
+    """DeepSeek API 클라이언트 생성"""
+    api_key = os.getenv('DEEPSEEK_API_KEY')
+    if not api_key:
+        raise ValueError("❌ DEEPSEEK_API_KEY 환경변수가 설정되지 않았습니다.")
+    
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.deepseek.com/v1"
+    )
+    return client
 
 # 경로 설정
 VAULT_ROOT = Path(__file__).parent.parent
@@ -53,12 +63,18 @@ def sanitize_collection_name(name: str) -> str:
     return sanitized[:50] if sanitized else "unknown_channel"
 
 class ChannelRAG:
-    def __init__(self):
+    def __init__(self, model: str = "deepseek-chat"):
         """채널별 격리 RAG 시스템 초기화"""
-        # 로컬 Gemini 클라이언트 초기화
-        self.client = local_gemini
-        if not self.client.is_available():
-            raise ValueError("❌ 로컬 gemini가 사용 불가능합니다. 설치를 확인하세요.")
+        # 모델명 저장
+        self.model = model
+        print(f"🤖 사용 모델: {model}")
+        
+        # DeepSeek 클라이언트 초기화
+        try:
+            self.client = create_deepseek_client()
+            print("✅ DeepSeek API 클라이언트 초기화 완료")
+        except Exception as e:
+            raise ValueError(f"❌ DeepSeek API 초기화 실패: {e}")
         
         # ChromaDB 클라이언트 초기화
         try:
@@ -66,14 +82,14 @@ class ChannelRAG:
                 path=str(CHROMA_PATH),
                 settings=ChromaSettings(anonymized_telemetry=False)
             )
-            print(f"✅ ChromaDB 연결됨 (채널별 격리 모드)")
+            print(f"✅ ChromaDB 연결됨: {CHROMA_PATH}")
         except Exception as e:
             raise ValueError(f"❌ ChromaDB 로드 실패: {e}\n'python embed.py'를 먼저 실행하세요.")
         
         # 프롬프트 매니저 초기화
         try:
             self.prompt_manager = PromptManager(chroma_path=CHROMA_PATH)
-            print(f"✅ 프롬프트 매니저 초기화됨")
+            print(f"✅ PromptManager 초기화 완료: {CHROMA_PATH.parent}/prompts")
         except Exception as e:
             print(f"⚠️ 프롬프트 매니저 초기화 실패: {e}")
             self.prompt_manager = None
@@ -145,9 +161,17 @@ class ChannelRAG:
 
 이 채널의 관점에서 구체적인 수치, 지역명, 전략이 포함된 답변을 작성해주세요."""
 
-            hyde_doc = self.client.client.generate_text(
-                f"당신은 {channel_name} 채널 전문가입니다.\n\n{prompt}"
-            ).strip()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.7
+            )
+            
+            hyde_doc = response.choices[0].message.content.strip()
             print(f"🎯 {channel_name} 채널 특화 HyDE: {hyde_doc[:50]}...")
             return hyde_doc
             
@@ -168,9 +192,17 @@ class ChannelRAG:
         # 2. 기존 방식 HyDE (보완용)
         for i in range(n_docs):
             try:
-                hyde_doc = self.client.client.generate_text(
-                    f"당신은 {channel_name} 채널의 일본 부동산 투자 전문가입니다.\n\n다음 질문에 대한 완벽한 답변이 담긴 문서를 {channel_name} 채널 관점에서 작성해주세요: '{query}'\n\n답변에는 구체적인 수치, 지역명, 투자 전략이 포함되어야 합니다."
-                ).strip()
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": f"당신은 {channel_name} 채널의 일본 부동산 투자 전문가입니다."},
+                        {"role": "user", "content": f"다음 질문에 대한 완벽한 답변이 담긴 문서를 {channel_name} 채널 관점에서 작성해주세요: '{query}'\n\n답변에는 구체적인 수치, 지역명, 투자 전략이 포함되어야 합니다."}
+                    ],
+                    max_tokens=150,
+                    temperature=0.7
+                )
+                
+                hyde_doc = response.choices[0].message.content.strip()
                 hyde_docs.append(hyde_doc)
                 print(f"🎯 {channel_name} 기본 HyDE {i+1}: {hyde_doc[:50]}...")
                 
@@ -208,9 +240,17 @@ class ChannelRAG:
 **60토큰 이내로 간결하게 작성하세요.**
 """
             
-            rewritten = self.client.client.generate_text(
-                f"당신은 {channel_name} 채널 전문 검색 질의 최적화 전문가입니다.\n\n{prompt}"
-            ).strip()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 검색 질의 최적화 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=60,
+                temperature=0.3
+            )
+            
+            rewritten = response.choices[0].message.content.strip()
             print(f"🔄 {channel_name} Query Rewriting: {rewritten}")
             return rewritten
             
@@ -349,9 +389,17 @@ class ChannelRAG:
 선별된 영상 번호를 우선순위대로 나열하세요. (예: 1,3,5,2)
 최대 5개까지 선택하되, 정말 관련 없는 영상은 제외하세요."""
 
-            selection = self.client.client.generate_text(
-                f"당신은 {channel_name} 채널 전문 컨텐츠 관련성 평가 전문가입니다.\n\n{prompt}"
-            ).strip()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 컨텐츠 관련성 평가 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=50,
+                temperature=0.1
+            )
+            
+            selection = response.choices[0].message.content.strip()
             print(f"🤖 {channel_name} LLM 선별: {selection}")
             
             try:
@@ -418,9 +466,17 @@ class ChannelRAG:
 위 규칙과 구조에 따라 {channel_name} 채널의 정보만을 바탕으로 답변해주세요."""
 
         try:
-            return self.client.client.generate_text(
-                f"당신은 {channel_name} 채널 전문 AI 어시스턴트입니다.\n\n{final_prompt}"
-            ).strip()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 AI 어시스턴트입니다."},
+                    {"role": "user", "content": final_prompt}
+                ],
+                max_tokens=800,
+                temperature=0.7
+            )
+            
+            return response.choices[0].message.content.strip()
             
         except Exception as e:
             return f"답변 생성 중 오류가 발생했습니다: {e}"
@@ -450,20 +506,57 @@ class ChannelRAG:
         )
         
         try:
-            return self.client.client.generate_text(
-                f"당신은 {channel_name} 채널 전문 일본 부동산 투자 AI 어시스턴트입니다. 이 채널의 정보만을 바탕으로 실용적이고 구체적인 조언을 제공하세요.\n\n{prompt}"
-            ).strip()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 일본 부동산 투자 AI 어시스턴트입니다. 이 채널의 정보만을 바탕으로 실용적이고 구체적인 조언을 제공하세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=800,
+                temperature=0.7
+            )
+            
+            return response.choices[0].message.content.strip()
             
         except Exception as e:
             return f"답변 생성 중 오류가 발생했습니다: {e}"
 
-    def chat(self, query: str, channel_name: str):
+    def chat(self, query: str, channel_name: str, show_progress: bool = False):
         """메인 대화 함수 - 채널별 격리 검색"""
+        if show_progress:
+            # 진행 상황 출력
+            import json
+            import sys
+            import time
+            
+            # 1. 벡터 검색 시작
+            progress_data = {
+                "step": "벡터 검색",
+                "message": f"🔍 {channel_name} 채널에서 벡터 검색 중...",
+                "progress": 10.0,
+                "details": f"질문: {query[:50]}..."
+            }
+            print(f"PROGRESS:{json.dumps(progress_data, ensure_ascii=False)}")
+            sys.stdout.flush()
+            time.sleep(0.5)
+            
         print(f"🤔 질문: {query}")
         print(f"🎯 채널: {channel_name}")
         
         # 채널별 검색 실행
         search_results = self.channel_search(query, channel_name)
+        
+        if show_progress:
+            # 2. 답변 생성 시작
+            progress_data = {
+                "step": "답변 생성",
+                "message": f"🤖 DeepSeek으로 답변 생성 중...",
+                "progress": 80.0,
+                "details": f"검색 결과: {len(search_results)}개"
+            }
+            print(f"PROGRESS:{json.dumps(progress_data, ensure_ascii=False)}")
+            sys.stdout.flush()
+            time.sleep(0.5)
         
         if not search_results:
             return f"{channel_name} 채널에서 관련된 정보를 찾을 수 없습니다. 다른 키워드로 시도해보세요."
@@ -471,12 +564,40 @@ class ChannelRAG:
         # 답변 생성
         answer = self.generate_answer(query, search_results, channel_name)
         
+        if show_progress:
+            # 3. 완료
+            progress_data = {
+                "step": "완료",
+                "message": "✅ 답변 생성 완료",
+                "progress": 100.0,
+                "details": None
+            }
+            print(f"PROGRESS:{json.dumps(progress_data, ensure_ascii=False)}")
+            sys.stdout.flush()
+            print("FINAL_ANSWER:")
+            sys.stdout.flush()
+        
         return answer
 
 def main():
     """메인 실행 함수"""
     try:
-        rag = ChannelRAG()
+        # --model 옵션 확인
+        model = "deepseek-chat"  # 기본값
+        model_index = None
+        
+        for i, arg in enumerate(sys.argv):
+            if arg == "--model" and i + 1 < len(sys.argv):
+                model = sys.argv[i + 1]
+                model_index = i
+                break
+        
+        # --model 인자 제거
+        if model_index is not None:
+            sys.argv.pop(model_index + 1)  # 모델명 제거
+            sys.argv.pop(model_index)      # --model 제거
+        
+        rag = ChannelRAG(model=model)
         
         if len(sys.argv) < 2:
             print("🤖 Y-Data House RAG v6.0 (채널별 완전 격리)")
@@ -514,12 +635,16 @@ def main():
         # 질문 + 채널 처리
         if len(sys.argv) < 3:
             print("❌ 채널명이 필요합니다.")
-            print("사용법: python rag.py '질문' 채널명")
+            print("사용법: python rag.py '질문' 채널명 [--progress]")
             print("예시: python rag.py '도쿄 투자 전략' takaki_takehana")
+            print("예시: python rag.py '도쿄 투자 전략' takaki_takehana --progress")
             return
         
         query = command
         channel_name = sys.argv[2]
+        
+        # --progress 옵션 확인
+        show_progress = "--progress" in sys.argv
         
         # 채널 존재 확인
         if not rag.get_collection_by_channel(channel_name):
@@ -534,9 +659,10 @@ def main():
             return
         
         # RAG 검색 및 답변 생성
-        answer = rag.chat(query, channel_name)
+        answer = rag.chat(query, channel_name, show_progress)
         
-        print(f"\n🤖 **{channel_name} 채널 답변:**")
+        if not show_progress:
+            print(f"\n🤖 **{channel_name} 채널 답변:**")
         print(answer)
         
     except Exception as e:

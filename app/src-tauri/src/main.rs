@@ -123,9 +123,13 @@ struct ServerError;
 
 impl warp::reject::Reject for ServerError {}
 
-
-
-
+#[derive(Serialize, Deserialize, Clone)]
+struct AIProgressUpdate {
+    step: String,
+    message: String,
+    progress: f32,
+    details: Option<String>,
+}
 
 // 프로젝트 루트 경로 찾기
 fn get_project_root() -> PathBuf {
@@ -1543,91 +1547,112 @@ async fn ask_rag(query: String) -> Result<String, String> {
     }
 }
 
-// 채널별 AI 질문 (채널 선택 포함)
+
+
+// 채널별 AI 질문 (DeepSeek, 실시간 진행 상황 포함)
 #[command]
-async fn ask_ai_with_channel(query: String, channel_name: String) -> Result<String, String> {
+async fn ask_ai_with_progress(window: Window, query: String, channel_name: String, model: String) -> Result<String, String> {
     let project_root = get_project_root();
     let rag_script = project_root.join("vault").join("90_indices").join("rag.py");
     
     if !rag_script.exists() {
         return Err("RAG 스크립트를 찾을 수 없습니다".to_string());
     }
-    
+
+    // 초기 진행 상황 전송
+    let _ = window.emit("ai-progress", AIProgressUpdate {
+        step: "초기화".to_string(),
+        message: "🔍 검색 준비 중...".to_string(),
+        progress: 0.0,
+        details: Some(format!("채널: {} | 모델: {}", channel_name, model)),
+    });
+
     let venv_python = project_root.join("venv").join("bin").join("python");
-    let output = Command::new(&venv_python)
-        .args(&[rag_script.to_str().unwrap(), &query, &channel_name])
+    let mut child = Command::new(&venv_python)
+        .args(&[rag_script.to_str().unwrap(), &query, &channel_name, "--progress", "--model", &model])
         .current_dir(&project_root)
         .env("PYTHONUNBUFFERED", "1")
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().unwrap();
+    let reader = BufReader::new(stdout);
+    let mut result = String::new();
+    let mut is_final_answer = false;
+
+    // 실시간 출력 처리
+    for line in reader.lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        
+        // 진행 상황 파싱
+        if line.starts_with("PROGRESS:") {
+            if let Some(progress_json) = line.strip_prefix("PROGRESS:") {
+                if let Ok(progress_data) = serde_json::from_str::<AIProgressUpdate>(progress_json) {
+                    let _ = window.emit("ai-progress", progress_data);
+                }
+            }
+        }
+        // 최종 답변 시작 표시
+        else if line.starts_with("FINAL_ANSWER:") {
+            is_final_answer = true;
+            let _ = window.emit("ai-progress", AIProgressUpdate {
+                step: "완료".to_string(),
+                message: "✅ 답변 생성 완료".to_string(),
+                progress: 100.0,
+                details: None,
+            });
+        }
+        // 최종 답변 수집
+        else if is_final_answer {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str(&line);
+        }
+    }
+
+    let status = child.wait().map_err(|e| e.to_string())?;
     
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    if status.success() {
+        if result.is_empty() {
+            // 진행 상황 없이 기본 방식으로 실행된 경우
+            let output = Command::new(&venv_python)
+                .args(&[rag_script.to_str().unwrap(), &query, &channel_name, "--model", &model])
+                .current_dir(&project_root)
+                .env("PYTHONUNBUFFERED", "1")
+                .output()
+                .map_err(|e| e.to_string())?;
+            
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(format!("DeepSeek RAG 질문 실패: {}", stderr))
+            }
+        } else {
+            Ok(result)
+        }
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("AI 질문 실패: {}", stderr))
+        let stderr_output = Command::new(&venv_python)
+            .args(&[rag_script.to_str().unwrap(), &query, &channel_name, "--model", &model])
+            .current_dir(&project_root)
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| e.to_string())?;
+        
+        let stderr = String::from_utf8_lossy(&stderr_output.stderr);
+        Err(format!("DeepSeek RAG 질문 실패: {}", stderr))
     }
 }
 
-// Gemini RAG 함수 추가
-#[command]
-async fn ask_gemini_with_channel(query: String, channel_name: String) -> Result<String, String> {
-    let project_root = get_project_root();
-    let rag_script = project_root.join("vault").join("90_indices").join("rag_gemini.py");
-    
-    if !rag_script.exists() {
-        return Err("Gemini RAG 스크립트를 찾을 수 없습니다".to_string());
-    }
-    
-    let venv_python = project_root.join("venv").join("bin").join("python");
-    let output = Command::new(&venv_python)
-        .args(&[rag_script.to_str().unwrap(), "ask", &query, "--channel", &channel_name])
-        .current_dir(&project_root)
-        .env("PYTHONUNBUFFERED", "1")
-        .output()
-        .map_err(|e| e.to_string())?;
-    
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Gemini RAG 질문 실패: {}", stderr))
-    }
-}
 
-// 통합 AI 함수 (모델 선택 가능)
-#[command]
-async fn ask_ai_universal(query: String, channel_name: String, model: String) -> Result<String, String> {
-    match model.as_str() {
-        "gemini" => ask_gemini_with_channel(query, channel_name).await,
-        "deepseek" | _ => ask_ai_with_channel(query, channel_name).await,
-    }
-}
 
-// Gemini용 채널 목록 조회
+// AI 질문 (실시간 진행 상황 포함)
 #[command]
-async fn get_available_channels_for_gemini() -> Result<Vec<AIChannelInfo>, String> {
-    let project_root = get_project_root();
-    let rag_script = project_root.join("vault").join("90_indices").join("rag_gemini.py");
-    
-    if !rag_script.exists() {
-        return Ok(vec![]);
-    }
-    
-    let venv_python = project_root.join("venv").join("bin").join("python");
-    let output = Command::new(&venv_python)
-        .args(&[rag_script.to_str().unwrap(), "channels"])
-        .current_dir(&project_root)
-        .output()
-        .map_err(|e| e.to_string())?;
-    
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let channels = parse_channel_list(&stdout);
-        Ok(channels)
-    } else {
-        Err("Gemini 채널 목록 조회 실패".to_string())
-    }
+async fn ask_ai_universal_with_progress(window: Window, query: String, channel_name: String, model: String) -> Result<String, String> {
+    ask_ai_with_progress(window, query, channel_name, model).await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1637,6 +1662,8 @@ struct AIChannelInfo {
     description: Option<String>,
     last_updated: Option<String>,
 }
+
+
 
 // AI용 채널 목록 조회
 #[command]
@@ -2675,11 +2702,8 @@ fn main() {
             create_embeddings_with_progress,
             vector_search,
             ask_rag,
-            ask_ai_with_channel,
-            ask_gemini_with_channel,
-            ask_ai_universal,
+            ask_ai_universal_with_progress,
             get_available_channels_for_ai,
-            get_available_channels_for_gemini,
             get_channel_prompt,
             auto_generate_channel_prompt,
             get_channel_analysis,

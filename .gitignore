@@ -249,3 +249,4 @@ site/
 # End of Y-Data-House .gitignore
 # =============================================================================
 vault/downloads/**
+vault/90_indices/search_sessions/**

@@ -42,6 +42,13 @@ export const AIAnswerComponent: React.FC<AIAnswerComponentProps> = ({ response }
     }
   };
 
+  const getModelDisplayName = (model: string) => {
+    switch (model) {
+      case 'deepseek': return '🤖 DeepSeek';
+      default: return '🤖 AI';
+    }
+  };
+
   // 답변을 마크다운 스타일로 렌더링하는 간단한 함수
   const renderAnswer = (text: string) => {
     // 간단한 마크다운 파싱 (볼드, 이탤릭, 리스트 등)
@@ -92,7 +99,7 @@ export const AIAnswerComponent: React.FC<AIAnswerComponentProps> = ({ response }
         <div className="response-info">
           <span className="channel-badge">📺 {response.channel_used}</span>
           <span className={`model-indicator ${response.model_used}`}>
-            {response.model_used === 'gemini' ? '✨ Gemini' : '🧠 DeepSeek'}
+            {getModelDisplayName(response.model_used)}
           </span>
           <span className="response-time">⏱️ {response.response_time.toFixed(1)}초</span>
         </div>

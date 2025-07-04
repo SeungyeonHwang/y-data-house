@@ -379,7 +379,97 @@ ask: $(VENV_NAME)
 		echo "   'make install'을 다시 실행하세요."; \
 		exit 1; \
 	fi
+	@if [ -f .env ]; then \
+		export $$(cat .env | xargs) 2>/dev/null || true; \
+	fi; \
+	if [ -z "$$DEEPSEEK_API_KEY" ]; then \
+		echo "❌ DEEPSEEK_API_KEY 환경변수가 설정되지 않았습니다."; \
+		echo "다음 방법 중 하나를 사용하여 API 키를 설정하세요:"; \
+		echo "  1. export DEEPSEEK_API_KEY='your_api_key_here'"; \
+		echo "  2. .env 파일에 DEEPSEEK_API_KEY=your_api_key_here 추가"; \
+		echo "  3. 현재 .env 파일을 확인하세요: cat .env"; \
+		exit 1; \
+	fi
 	$(PYTHON) vault/90_indices/rag.py $(QUERY)
+
+# DeepSeek 채널별 RAG 질의응답 
+.PHONY: ask-deepseek-channel
+ask-deepseek-channel: $(VENV_NAME)  ## 🤖 DeepSeek 특정 채널 RAG 질의응답
+	@echo "🤖 특정 채널 DeepSeek RAG 질의응답..."
+	@if [ -z "$(QUERY)" ]; then \
+		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
+		echo "예시: make ask-deepseek-channel QUERY=\"도쿄 투자 전략\" CHANNEL=\"일본 부동산 투자\""; \
+		exit 1; \
+	fi
+	@if [ -z "$(CHANNEL)" ]; then \
+		echo "❌ 채널명이 필요합니다. CHANNEL=\"채널명\"을 지정하세요."; \
+		echo "사용 가능한 채널:"; \
+		echo "  - \"일본 부동산 투자\""; \
+		echo "  - \"竹花貴騎 (Takaki Takehana)\""; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import openai" 2>/dev/null; then \
+		echo "❌ openai 패키지가 설치되지 않았습니다."; \
+		echo "   'make install'을 다시 실행하세요."; \
+		exit 1; \
+	fi
+	@if [ -f .env ]; then \
+		export $$(cat .env | xargs) 2>/dev/null || true; \
+	fi; \
+	if [ -z "$$DEEPSEEK_API_KEY" ]; then \
+		echo "❌ DEEPSEEK_API_KEY 환경변수가 설정되지 않았습니다."; \
+		echo "다음 방법 중 하나를 사용하여 API 키를 설정하세요:"; \
+		echo "  1. export DEEPSEEK_API_KEY='your_api_key_here'"; \
+		echo "  2. .env 파일에 DEEPSEEK_API_KEY=your_api_key_here 추가"; \
+		echo "  3. 현재 .env 파일을 확인하세요: cat .env"; \
+		exit 1; \
+	fi
+	$(PYTHON) vault/90_indices/rag.py "$(QUERY)" "$(CHANNEL)"
+
+# DeepSeek 채널별 진행 상황 표시 RAG
+.PHONY: ask-deepseek-progress
+ask-deepseek-progress: $(VENV_NAME)  ## 🤖 DeepSeek 진행상황 표시 RAG 질의응답
+	@echo "🤖 DeepSeek RAG 질의응답 (진행상황 표시)..."
+	@if [ -z "$(QUERY)" ]; then \
+		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
+		echo "예시: make ask-deepseek-progress QUERY=\"도쿄 투자 전략\" CHANNEL=\"일본 부동산 투자\""; \
+		exit 1; \
+	fi
+	@if [ -z "$(CHANNEL)" ]; then \
+		echo "❌ 채널명이 필요합니다. CHANNEL=\"채널명\"을 지정하세요."; \
+		echo "사용 가능한 채널:"; \
+		echo "  - \"일본 부동산 투자\""; \
+		echo "  - \"竹花貴騎 (Takaki Takehana)\""; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import openai" 2>/dev/null; then \
+		echo "❌ openai 패키지가 설치되지 않았습니다."; \
+		echo "   'make install'을 다시 실행하세요."; \
+		exit 1; \
+	fi
+	@if [ -f .env ]; then \
+		export $$(cat .env | xargs) 2>/dev/null || true; \
+	fi; \
+	if [ -z "$$DEEPSEEK_API_KEY" ]; then \
+		echo "❌ DEEPSEEK_API_KEY 환경변수가 설정되지 않았습니다."; \
+		echo "다음 방법 중 하나를 사용하여 API 키를 설정하세요:"; \
+		echo "  1. export DEEPSEEK_API_KEY='your_api_key_here'"; \
+		echo "  2. .env 파일에 DEEPSEEK_API_KEY=your_api_key_here 추가"; \
+		echo "  3. 현재 .env 파일을 확인하세요: cat .env"; \
+		exit 1; \
+	fi
+	$(PYTHON) vault/90_indices/rag.py "$(QUERY)" "$(CHANNEL)" --progress
+
+# DeepSeek 채널 목록 조회
+.PHONY: deepseek-channels
+deepseek-channels: $(VENV_NAME)  ## 📺 DeepSeek 검색 가능한 채널 조회
+	@echo "📺 DeepSeek 검색 가능한 채널 조회..."
+	@if ! $(PYTHON) -c "import openai" 2>/dev/null; then \
+		echo "❌ openai 패키지가 설치되지 않았습니다."; \
+		echo "   'make install'을 다시 실행하세요."; \
+		exit 1; \
+	fi
+	$(PYTHON) vault/90_indices/rag.py channels
 
 # Clean vector embeddings
 .PHONY: embed-clean
@@ -391,116 +481,7 @@ embed-clean:
 	else \
 		echo "ℹ️  벡터 임베딩 데이터베이스가 존재하지 않습니다"; \
 	fi
-	@echo "💡 다음 'make embed' 실행 시 모든 영상이 새로 임베딩됩니다"
-
-# ========================== Gemini 벡터 검색 시스템 ==========================
-
-# Gemini 임베딩 생성
-.PHONY: gemini-embed
-gemini-embed: $(VENV_NAME)
-	@echo "🤖 Gemini 벡터 임베딩 생성 중..."
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		echo ""; \
-		echo "다음 명령을 실행하세요:"; \
-		echo "  source venv/bin/activate"; \
-		echo "  make install"; \
-		echo ""; \
-		exit 1; \
-	fi
-	@if [ -z "$$GEMINI_API_KEY" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		echo "다음 방법 중 하나를 사용하여 API 키를 설정하세요:"; \
-		echo "  1. export GEMINI_API_KEY='your_api_key_here'"; \
-		echo "  2. .env 파일에 GEMINI_API_KEY=your_api_key_here 추가"; \
-		exit 1; \
-	fi
-	$(YDH) gemini-embed
-	@echo "✅ Gemini 벡터 임베딩 완료!"
-
-# 특정 채널만 Gemini 임베딩
-.PHONY: gemini-embed-channels
-gemini-embed-channels: $(VENV_NAME)
-	@echo "🤖 특정 채널 Gemini 임베딩 생성 중..."
-	@if [ -z "$(CHANNELS)" ]; then \
-		echo "사용법: make gemini-embed-channels CHANNELS=\"채널1,채널2\""; \
-		echo "예시: make gemini-embed-channels CHANNELS=\"도쿄부동산,takaki_takehana\""; \
-		exit 1; \
-	fi
-	@if [ -z "$$GEMINI_API_KEY" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		exit 1; \
-	fi
-	$(YDH) gemini-embed --channels "$(CHANNELS)"
-	@echo "✅ 선택된 채널 Gemini 임베딩 완료!"
-
-# Gemini 벡터 검색
-.PHONY: search-gemini
-search-gemini: $(VENV_NAME)
-	@echo "🔍 Gemini 벡터 검색..."
-	@if [ -z "$(QUERY)" ]; then \
-		echo "사용법: make search-gemini QUERY=\"검색어\""; \
-		echo "예시:"; \
-		echo "  make search-gemini QUERY=\"도쿄 부동산 투자 전략\""; \
-		echo "  make search-gemini QUERY=\"원룸 수익률\" CHANNEL=\"도쿄부동산\""; \
-		echo "  make search-gemini QUERY=\"투자 전략\" YEAR=\"2023\""; \
-		exit 1; \
-	fi
-	@if [ -z "$$GEMINI_API_KEY" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		exit 1; \
-	fi
-	@cmd="$(YDH) search-gemini \"$(QUERY)\""; \
-	if [ -n "$(CHANNEL)" ]; then \
-		cmd="$$cmd --channel \"$(CHANNEL)\""; \
-	fi; \
-	if [ -n "$(YEAR)" ]; then \
-		cmd="$$cmd --year \"$(YEAR)\""; \
-	fi; \
-	if [ -n "$(NUM)" ]; then \
-		cmd="$$cmd --num-results $(NUM)"; \
-	fi; \
-	if [ -n "$(MIN_SIM)" ]; then \
-		cmd="$$cmd --min-similarity $(MIN_SIM)"; \
-	fi; \
-	eval $$cmd
-
-# Gemini 채널 목록 조회
-.PHONY: gemini-channels
-gemini-channels: $(VENV_NAME)
-	@echo "📺 Gemini 검색 가능한 채널 조회..."
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	$(YDH) gemini-channels
-
-# Gemini 데이터베이스 통계
-.PHONY: gemini-stats
-gemini-stats: $(VENV_NAME)
-	@echo "📊 Gemini 데이터베이스 통계 조회..."
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	$(YDH) gemini-stats
-
-# Gemini 임베딩 데이터베이스 정리
-.PHONY: gemini-clean
-gemini-clean:
-	@echo "🧹 Gemini 임베딩 데이터베이스 초기화 중..."
-	@if [ -d "vault/90_indices/chroma_gemini" ]; then \
-		rm -rf vault/90_indices/chroma_gemini; \
-		echo "✅ Gemini 임베딩 데이터베이스가 삭제되었습니다"; \
-	else \
-		echo "ℹ️  삭제할 Gemini 임베딩 데이터베이스가 없습니다"; \
-	fi
-	@echo "💡 다음 'make gemini-embed' 실행 시 모든 영상이 새로 임베딩됩니다"
-
-# Gemini 시스템 전체 재구축
-.PHONY: gemini-rebuild
-gemini-rebuild: gemini-clean gemini-embed
-	@echo "🎉 Gemini 벡터 검색 시스템 재구축 완료!"
+	@echo "💡 다음 'make embed-clean' 실행 시 모든 벡터 데이터가 초기화됩니다"
 
 # 세션 관리 명령어
 .PHONY: list-sessions
@@ -604,109 +585,7 @@ clean-sessions-force: $(VENV_NAME)  ## 🧹 확인 없이 30일 이상 된 세�
 	fi
 	$(YDH) clean-sessions --days 30 --confirm
 
-# Gemini RAG 질의응답 명령어
-.PHONY: ask-gemini
-ask-gemini: $(VENV_NAME)  ## 🤖 Gemini RAG 질의응답
-	@echo "🤖 Gemini RAG 질의응답..."
-	@if [ -z "$(QUERY)" ]; then \
-		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
-		echo "예시: make ask-gemini QUERY=\"머신러닝이 뭔가요?\""; \
-		exit 1; \
-	fi
-	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		exit 1; \
-	fi
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	$(YDH) ask-gemini "$(QUERY)"
 
-.PHONY: ask-gemini-channel
-ask-gemini-channel: $(VENV_NAME)  ## 🤖 특정 채널 RAG 질의응답
-	@echo "🤖 특정 채널 Gemini RAG 질의응답..."
-	@if [ -z "$(QUERY)" ]; then \
-		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
-		exit 1; \
-	fi
-	@if [ -z "$(CHANNEL)" ]; then \
-		echo "❌ 채널명이 필요합니다. CHANNEL=\"채널명\"을 지정하세요."; \
-		exit 1; \
-	fi
-	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		exit 1; \
-	fi
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	$(YDH) ask-gemini "$(QUERY)" --channel "$(CHANNEL)"
-
-.PHONY: ask-gemini-stream
-ask-gemini-stream: $(VENV_NAME)  ## 🤖 스트리밍 RAG 답변
-	@echo "🤖 스트리밍 Gemini RAG 질의응답..."
-	@if [ -z "$(QUERY)" ]; then \
-		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
-		exit 1; \
-	fi
-	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		exit 1; \
-	fi
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	@cmd="$(YDH) ask-gemini \"$(QUERY)\" --stream"; \
-	if [ -n "$(CHANNEL)" ]; then \
-		cmd="$$cmd --channel \"$(CHANNEL)\""; \
-	fi; \
-	eval $$cmd
-
-.PHONY: generate-prompts
-generate-prompts: $(VENV_NAME)  ## 🎯 Gemini로 채널별 프롬프트 자동 생성
-	@echo "🎯 Gemini로 채널별 프롬프트 자동 생성..."
-	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		exit 1; \
-	fi
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	$(YDH) generate-prompts --method gemini
-
-.PHONY: generate-prompts-channel
-generate-prompts-channel: $(VENV_NAME)  ## 🎯 특정 채널 프롬프트 생성
-	@echo "🎯 특정 채널 프롬프트 생성..."
-	@if [ -z "$(CHANNEL)" ]; then \
-		echo "❌ 채널명이 필요합니다. CHANNEL=\"채널명\"을 지정하세요."; \
-		exit 1; \
-	fi
-	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
-		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
-		exit 1; \
-	fi
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	$(YDH) generate-prompts --channels "$(CHANNEL)" --method gemini
-
-.PHONY: list-prompts
-list-prompts: $(VENV_NAME)  ## 📝 저장된 채널 프롬프트 목록 조회
-	@echo "📝 저장된 채널 프롬프트 목록 조회..."
-	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
-		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
-		exit 1; \
-	fi
-	@cmd="$(YDH) list-prompts"; \
-	if [ -n "$(CHANNEL)" ]; then \
-		cmd="$$cmd --channel \"$(CHANNEL)\""; \
-	fi; \
-	eval $$cmd
 
 # Clean up
 .PHONY: clean
@@ -733,6 +612,9 @@ help:
 	@echo "  make embed                - 벡터 임베딩 생성 (AI 검색 기반 구축)"
 	@echo "  make search               - 벡터 검색 테스트 (QUERY=\"검색어\" 필요)"
 	@echo "  make ask                  - DeepSeek RAG 질문-답변 (QUERY=\"질문\" 필요)"
+	@echo "  make ask-deepseek-channel - DeepSeek 특정 채널 RAG 질의응답 (QUERY=\"질문\" CHANNEL=\"채널명\")"
+	@echo "  make ask-deepseek-progress - DeepSeek 진행상황 표시 RAG (QUERY=\"질문\" CHANNEL=\"채널명\")"
+	@echo "  make deepseek-channels    - DeepSeek 검색 가능한 채널 목록 조회"
 	@echo "  make embed-clean          - 벡터 임베딩 데이터베이스 초기화"
 	@echo "  make clean                - 가상환경 삭제"
 	@echo ""
@@ -776,7 +658,13 @@ help:
 	@echo "  6. make download-full-scan         # 전체 무결성 검사 (누락 영상 복구)"
 	@echo "  7. make check                      # 데이터 정합성 검사"
 	@echo "  8. make embed                      # 벡터 임베딩 생성"
-	@echo "  9. make ask QUERY=\"투자 전략은?\"    # AI 질문-답변 시스템"
+	@echo "  9. make ask QUERY=\"투자 전략은?\"    # AI 질문-답변 시스템 (기본)"
+	@echo "  10. make ask-deepseek-channel QUERY=\"도쿄 투자 전략\" CHANNEL=\"일본 부동산 투자\"  # 채널별 질문"
+	@echo ""
+	@echo "🤖 DeepSeek RAG 사용법:"
+	@echo "  1. make deepseek-channels                                      # 사용 가능한 채널 확인"
+	@echo "  2. make ask-deepseek-channel QUERY=\"투자 전략\" CHANNEL=\"일본 부동산 투자\"  # 채널별 질문"
+	@echo "  3. make ask-deepseek-progress QUERY=\"투자 전략\" CHANNEL=\"일본 부동산 투자\" # 진행상황 표시"
 	@echo ""
 	@echo "🤖 Gemini 검색 사용법:"
 	@echo "  1. export GEMINI_API_KEY=\"키\"       # Gemini API 키 설정"

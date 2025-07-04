@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import ChannelSelector from './ChannelSelector';
 import AIAnswerComponent from './AIAnswerComponent';
 
@@ -19,13 +20,21 @@ interface VideoSource {
   excerpt: string;
 }
 
+interface AIProgress {
+  step: string;
+  message: string;
+  progress: number;
+  details?: string;
+}
+
 export const AIQuestionTab: React.FC = () => {
   const [selectedChannel, setSelectedChannel] = useState<string>('');
-  const [selectedModel, setSelectedModel] = useState<string>('deepseek');
+  const [selectedModel, setSelectedModel] = useState<string>('deepseek-chat');
   const [query, setQuery] = useState<string>('');
   const [response, setResponse] = useState<AIResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<AIProgress | null>(null);
   const [history, setHistory] = useState<Array<{
     query: string;
     response: AIResponse;
@@ -33,6 +42,30 @@ export const AIQuestionTab: React.FC = () => {
   }>>([]);
 
   const queryInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // 진행 상황 이벤트 리스너 설정
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    const setupProgressListener = async () => {
+      unlisten = await listen<AIProgress>('ai-progress', (event) => {
+        setProgress(event.payload);
+        
+        // 완료 시 progress 초기화
+        if (event.payload.progress >= 100) {
+          setTimeout(() => setProgress(null), 2000);
+        }
+      });
+    };
+
+    setupProgressListener();
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
 
   const handleChannelSelect = (channelName: string) => {
     setSelectedChannel(channelName);
@@ -59,10 +92,12 @@ export const AIQuestionTab: React.FC = () => {
 
     setLoading(true);
     setError(null);
+    setProgress(null);
     const startTime = performance.now();
 
     try {
-      const result = await invoke<string>('ask_ai_universal', {
+      // 선택한 모델 사용
+      const result = await invoke<string>('ask_ai_universal_with_progress', {
         query: query.trim(),
         channelName: selectedChannel,
         model: selectedModel
@@ -96,6 +131,7 @@ export const AIQuestionTab: React.FC = () => {
       setError(`AI 질문 처리 중 오류가 발생했습니다: ${err}`);
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
@@ -103,12 +139,39 @@ export const AIQuestionTab: React.FC = () => {
     setQuery(historyItem.query);
     setResponse(historyItem.response);
     setSelectedChannel(historyItem.response.channel_used);
-    setSelectedModel(historyItem.response.model_used);
   };
 
   const clearHistory = () => {
     setHistory([]);
     setResponse(null);
+  };
+
+  const getProgressStepClass = (step: string) => {
+    const normalizedStep = step.toLowerCase();
+    if (normalizedStep.includes('벡터') || normalizedStep.includes('검색')) return 'step-search';
+    if (normalizedStep.includes('hyde')) return 'step-hyde';
+    if (normalizedStep.includes('재작성') || normalizedStep.includes('쿼리')) return 'step-rewrite';
+    if (normalizedStep.includes('재순위') || normalizedStep.includes('rerank')) return 'step-rerank';
+    if (normalizedStep.includes('완료') || normalizedStep.includes('생성')) return 'step-complete';
+    return '';
+  };
+
+  const getModelDisplayName = (model: string) => {
+    switch (model) {
+      case 'deepseek-chat': return '🤖 DeepSeek Chat';
+      case 'deepseek-reasoner': return '🧠 DeepSeek Reasoner';
+      case 'deepseek': return '🤖 DeepSeek'; // 호환성을 위해 유지
+      default: return '🤖 AI';
+    }
+  };
+
+  const getModelIcon = (model: string) => {
+    switch (model) {
+      case 'deepseek-chat': return '🤖';
+      case 'deepseek-reasoner': return '🧠';
+      case 'deepseek': return '🤖'; // 호환성을 위해 유지
+      default: return '🤖';
+    }
   };
 
   return (
@@ -125,18 +188,17 @@ export const AIQuestionTab: React.FC = () => {
           </div>
           
           <div className="model-selection-section">
-            <label className="model-selector-label">
-              🤖 AI 모델 선택
-            </label>
-            <select 
-              value={selectedModel} 
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="model-selector"
-              disabled={loading}
-            >
-              <option value="deepseek">🧠 DeepSeek (빠름)</option>
-              <option value="gemini">✨ Gemini (정확함)</option>
-            </select>
+            <h3>🤖 AI 모델 선택</h3>
+            <div className="model-options">
+              <select 
+                value={selectedModel} 
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="model-selector"
+              >
+                <option value="deepseek-chat">🤖 DeepSeek Chat (기본)</option>
+                <option value="deepseek-reasoner">🧠 DeepSeek Reasoner (추론형)</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -151,7 +213,7 @@ export const AIQuestionTab: React.FC = () => {
                     📺 {selectedChannel} 채널
                   </div>
                   <div className="selected-model-info">
-                    {selectedModel === 'gemini' ? '✨ Gemini' : '🧠 DeepSeek'} 모델
+                    {getModelDisplayName(selectedModel)} 사용
                   </div>
                 </div>
               )}
@@ -163,8 +225,8 @@ export const AIQuestionTab: React.FC = () => {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={selectedChannel 
-                  ? `${selectedChannel} 채널 정보를 ${selectedModel === 'gemini' ? 'Gemini' : 'DeepSeek'}로 질문해보세요...`
-                  : "먼저 위에서 채널과 AI 모델을 선택해주세요"
+                  ? `${selectedChannel} 채널 정보를 ${getModelDisplayName(selectedModel)}로 질문해보세요...`
+                  : "먼저 위에서 채널을 선택해주세요"
                 }
                 className="question-input"
                 rows={3}
@@ -184,7 +246,7 @@ export const AIQuestionTab: React.FC = () => {
                       AI 답변 생성 중...
                     </>
                   ) : (
-                    `${selectedModel === 'gemini' ? '✨' : '🧠'} ${selectedModel === 'gemini' ? 'Gemini' : 'DeepSeek'}로 질문하기`
+                    `${getModelIcon(selectedModel)} ${getModelDisplayName(selectedModel)}로 질문하기`
                   )}
                 </button>
                 
@@ -200,6 +262,26 @@ export const AIQuestionTab: React.FC = () => {
               </div>
             </div>
           </form>
+
+          {/* 진행 상황 표시 */}
+          {progress && (
+            <div className={`progress-section ${getProgressStepClass(progress.step)}`}>
+              <div className="progress-header">
+                <span className="progress-step">{progress.step}</span>
+                <span className="progress-percentage">{progress.progress.toFixed(0)}%</span>
+              </div>
+              <div className="progress-bar">
+                <div 
+                  className="progress-fill" 
+                  style={{ width: `${progress.progress}%` }}
+                ></div>
+              </div>
+              <div className="progress-message">{progress.message}</div>
+              {progress.details && (
+                <div className="progress-details">{progress.details}</div>
+              )}
+            </div>
+          )}
 
           {error && (
             <div className="error-message">
@@ -239,7 +321,7 @@ export const AIQuestionTab: React.FC = () => {
                   <div className="history-meta">
                     <span className="history-channel">📺 {item.response.channel_used}</span>
                     <span className="history-model">
-                      {item.response.model_used === 'gemini' ? '✨ Gemini' : '🧠 DeepSeek'}
+                      {getModelDisplayName(item.response.model_used)}
                     </span>
                     <span className="history-time">
                       {item.timestamp.toLocaleTimeString()}
