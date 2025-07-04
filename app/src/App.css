@@ -113,65 +113,67 @@ html, body {
 
 .dashboard-actions {
   display: flex;
-  gap: 15px;
+  gap: 12px;
   justify-content: center;
   align-items: center;
   flex-wrap: wrap;
   margin-top: 20px;
 }
 
-/* 품질 선택기 */
-.quality-selector {
+/* 컴팩트한 다운로드 옵션 */
+.download-options {
   display: flex;
-  align-items: center;
   gap: 8px;
+  align-items: center;
+}
+
+.compact-select {
   background: #161b22;
   border: 1px solid #30363d;
-  border-radius: 8px;
+  color: #f0f6fc;
   padding: 8px 12px;
-}
-
-.quality-selector label {
-  color: #f0f6fc;
-  font-size: 14px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.quality-select {
-  background: #0d1117;
-  border: 1px solid #30363d;
-  color: #f0f6fc;
-  padding: 6px 10px;
   border-radius: 6px;
   font-size: 14px;
   outline: none;
   cursor: pointer;
+  min-width: 100px;
 }
 
-.quality-select:focus {
+.compact-select:focus {
   border-color: #58a6ff;
   box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.1);
 }
 
-.quality-select option {
+.compact-select option {
   background: #161b22;
   color: #f0f6fc;
 }
 
+
+
+/* 모드 표시기 */
+.mode-indicator {
+  background: #1f6feb;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .action-btn {
-  padding: 12px 24px;
+  padding: 12px 20px;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 140px;
   justify-content: center;
+  min-width: 160px;
+  height: 44px;
 }
 
 .action-btn.primary {
@@ -220,15 +222,25 @@ html, body {
   opacity: 0.8;
 }
 
+/* 반응형 디자인 */
 @media (max-width: 768px) {
   .dashboard-actions {
     flex-direction: column;
-    align-items: center;
+    gap: 12px;
+    align-items: stretch;
+  }
+  
+  .download-options {
+    justify-content: center;
+  }
+  
+  .compact-select {
+    flex: 1;
+    min-width: 120px;
   }
   
   .action-btn {
     width: 100%;
-    max-width: 300px;
   }
 }
 
@@ -1822,9 +1834,9 @@ html, body {
   border: 1px solid #30363d;
   border-radius: 12px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-  width: 90%;
-  max-width: 600px;
-  max-height: 80vh;
+  width: 95%;
+  max-width: 900px;
+  max-height: 85vh;
   overflow: hidden;
   animation: modalSlideIn 0.3s ease-out;
 }
@@ -1989,7 +2001,7 @@ html, body {
 
 .logs-container {
   padding: 0 24px 24px;
-  max-height: 300px;
+  max-height: 450px;
   overflow-y: auto;
 }
 
@@ -2005,7 +2017,7 @@ html, body {
   border: 1px solid #30363d;
   border-radius: 8px;
   padding: 16px;
-  max-height: 250px;
+  max-height: 400px;
   overflow-y: auto;
   font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', monospace;
 }
@@ -2083,11 +2095,14 @@ html, body {
 }
 
 /* 채널 선택 모달 스타일 */
-.channel-selector-content {
+.channel-selector {
   padding: 24px;
 }
 
 .channel-selector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 20px;
 }
 
@@ -2095,12 +2110,119 @@ html, body {
   color: #f0f6fc;
   font-size: 16px;
   font-weight: 600;
-  margin-bottom: 8px;
+  margin: 0;
 }
 
-.channel-selector-header p {
+.toggle-all-btn {
+  background: #1f6feb;
+  border: 1px solid #388bfd;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.toggle-all-btn:hover {
+  background: #388bfd;
+}
+
+.channel-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #0d1117;
+  margin-bottom: 20px;
+}
+
+.channel-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #30363d;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.channel-checkbox:last-child {
+  border-bottom: none;
+}
+
+.channel-checkbox:hover {
+  background: #161b22;
+}
+
+.channel-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #58a6ff;
+  cursor: pointer;
+}
+
+.channel-name {
+  color: #f0f6fc;
+  font-size: 14px;
+  cursor: pointer;
+  flex: 1;
+}
+
+.channel-selector-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.selected-count {
   color: #8b949e;
   font-size: 14px;
+}
+
+.channel-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.channel-actions .btn-primary,
+.channel-actions .btn-secondary {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.channel-actions .btn-primary {
+  background: #238636;
+  color: white;
+}
+
+.channel-actions .btn-primary:hover:not(:disabled) {
+  background: #2ea043;
+}
+
+.channel-actions .btn-primary:disabled {
+  background: #30363d;
+  color: #8b949e;
+  cursor: not-allowed;
+}
+
+.channel-actions .btn-secondary {
+  background: #6e7681;
+  color: white;
+}
+
+.channel-actions .btn-secondary:hover:not(:disabled) {
+  background: #8b949e;
+}
+
+.channel-selector-content {
+  padding: 24px;
 }
 
 .channel-selector-actions {
@@ -2126,7 +2248,7 @@ html, body {
 }
 
 .channel-checkboxes {
-  max-height: 300px;
+  max-height: 450px;
   overflow-y: auto;
   border: 1px solid #30363d;
   border-radius: 8px;
@@ -2260,7 +2382,7 @@ html, body {
 /* 반응형 디자인 */
 @media (max-width: 768px) {
   .progress-modal {
-    width: 95%;
+    width: 98%;
     max-height: 90vh;
   }
   
@@ -2279,6 +2401,11 @@ html, body {
   
   .logs-container {
     padding: 0 20px 20px;
+    max-height: 350px;
+  }
+  
+  .logs-content {
+    max-height: 320px;
   }
   
   .modal-footer {

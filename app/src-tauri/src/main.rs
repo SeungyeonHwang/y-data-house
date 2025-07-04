@@ -8,11 +8,13 @@ use std::process::{Command, Stdio};
 use std::io::{Write, BufRead, BufReader};
 use std::env;
 use std::collections::HashMap;
-use tauri::{Emitter, Window, State};
+use tauri::{Emitter, Window, State, Manager};
 use urlencoding::decode;
 use regex::Regex;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 // HTTP 서버 관련 imports
 use warp::Filter;
@@ -98,6 +100,13 @@ struct DownloadState {
 #[derive(Default, Clone)]
 struct ConversionState {
     is_converting: Arc<AtomicBool>,
+    current_process: Arc<Mutex<Option<std::process::Child>>>,
+}
+
+// 임베딩 생성을 위한 상태 관리
+#[derive(Default, Clone)]
+struct EmbeddingState {
+    is_cancelled: Arc<AtomicBool>,
     current_process: Arc<Mutex<Option<std::process::Child>>>,
 }
 
@@ -535,12 +544,44 @@ async fn cancel_download(state: State<'_, DownloadState>) -> Result<(), String> 
     // 중단 플래그 설정
     state.is_cancelled.store(true, Ordering::SeqCst);
     
-    // 현재 실행 중인 프로세스 종료
+    // 현재 실행 중인 프로세스 강제 종료
     if let Ok(mut process_guard) = state.current_process.lock() {
         if let Some(mut child) = process_guard.take() {
-            // 프로세스 강제 종료
-            let _ = child.kill();
-            let _ = child.wait(); // 좀비 프로세스 방지
+            // 🔥 IMPROVED: 더 강력한 프로세스 종료
+            #[cfg(unix)]
+            {
+                // SIGTERM 먼저 시도
+                let _ = child.kill();
+                
+                // 1초 대기 후 강제 종료 확인
+                thread::sleep(Duration::from_millis(1000));
+                
+                // 여전히 실행 중이면 SIGKILL 시도
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        // 프로세스가 종료됨
+                    }
+                    Ok(None) => {
+                        // 여전히 실행 중, 강제 종료 시도
+                        let pid = child.id();
+                        let _ = Command::new("kill")
+                            .args(&["-9", &pid.to_string()])
+                            .output();
+                        let _ = child.wait();
+                    }
+                    Err(_) => {
+                        // 오류 발생, 그냥 대기
+                        let _ = child.wait();
+                    }
+                }
+            }
+            
+            #[cfg(windows)]
+            {
+                // Windows에서는 기본 kill 사용
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
     
@@ -582,6 +623,211 @@ async fn cleanup_incomplete_downloads() -> Result<(), String> {
     Ok(())
 }
 
+// yt-dlp 진행률 파싱 함수
+fn parse_ytdlp_progress(line: &str, window: &Window, channel_name: &str) {
+    // [download] 25.5% of 12.34MiB at 1.23MiB/s ETA 00:10
+    if let Some(percent_start) = line.find("] ") {
+        if let Some(percent_end) = line[percent_start + 2..].find("% of") {
+            let percent_str = &line[percent_start + 2..percent_start + 2 + percent_end];
+            if let Ok(percent) = percent_str.parse::<f32>() {
+                let progress = DownloadProgress {
+                    channel: channel_name.to_string(),
+                    status: "다운로드 중".to_string(),
+                    progress: percent,
+                    current_video: format!("📥 진행률: {:.1}%", percent),
+                    total_videos: 1,
+                    completed_videos: 0,
+                    log_message: line.to_string(),
+                };
+                let _ = window.emit("download-progress", &progress);
+            }
+        }
+    }
+}
+
+// 실시간 출력 캡처를 위한 헬퍼 함수
+fn run_process_with_realtime_output(
+    mut child: std::process::Child,
+    window: &Window,
+    channel_name: &str,
+    state: &State<'_, DownloadState>,
+) -> Result<(u32, u32, std::process::ExitStatus), String> {
+    let stdout = child.stdout.take().ok_or("stdout 캡처 실패")?;
+    let stderr = child.stderr.take().ok_or("stderr 캡처 실패")?;
+    
+    let mut channel_total_videos = 0u32;
+    let mut channel_downloaded_videos = 0u32;
+    
+    // 통계 정보 전송을 위한 채널
+    let (channel_total_tx, channel_total_rx) = std::sync::mpsc::channel::<u32>();
+    let (channel_downloaded_tx, channel_downloaded_rx) = std::sync::mpsc::channel::<u32>();
+    
+    // 🔥 NEW: 마지막 로그 수신 시간 추적 (15초 타임아웃으로 단축)
+    let last_activity = Arc::new(Mutex::new(Instant::now()));
+    let timeout_duration = Duration::from_secs(15);  // 15초로 단축
+    
+    // stdout 실시간 읽기 스레드
+    let window_clone = window.clone();
+    let channel_name_clone = channel_name.to_string();
+    let is_cancelled = state.is_cancelled.clone();
+    let last_activity_clone = last_activity.clone();
+    
+    let stdout_handle = thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        
+        for line in reader.lines() {
+            // 중단 신호 확인
+            if is_cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            
+            match line {
+                Ok(line_str) => {
+                    if line_str.trim().is_empty() {
+                        continue;
+                    }
+                    
+                    // 🔥 NEW: 활동 시간 업데이트 (타임아웃 방지)
+                    if let Ok(mut last_time) = last_activity_clone.lock() {
+                        *last_time = Instant::now();
+                    }
+                    
+                    // 실시간 로그 메시지 전송
+                    let log_progress = DownloadProgress {
+                        channel: channel_name_clone.clone(),
+                        status: "진행 중".to_string(),
+                        progress: 0.0,
+                        current_video: format!("📺 {}", channel_name_clone),
+                        total_videos: 0,
+                        completed_videos: 0,
+                        log_message: line_str.clone(),
+                    };
+                    let _ = window_clone.emit("download-progress", &log_progress);
+                    
+                    // 비디오 수 파싱
+                    if line_str.contains("총") && line_str.contains("개 영상을 발견했습니다") {
+                        if let Some(start) = line_str.find("총 ") {
+                            if let Some(end) = line_str[start..].find("개 영상을 발견했습니다") {
+                                let number_str = line_str[start + 2..start + end].trim();
+                                if let Ok(count) = number_str.parse::<u32>() {
+                                    let _ = channel_total_tx.send(count);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 다운로드 완료 수 파싱
+                    if line_str.contains("다운로드 완료:") && line_str.contains("개 성공") {
+                        if let Some(start) = line_str.find("다운로드 완료: ") {
+                            if let Some(end) = line_str[start..].find("개 성공") {
+                                let number_str = line_str[start + 7..start + end].trim();
+                                if let Ok(count) = number_str.parse::<u32>() {
+                                    let _ = channel_downloaded_tx.send(count);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // yt-dlp 진행률 파싱
+                    if line_str.contains("[download]") && line_str.contains("%") {
+                        parse_ytdlp_progress(&line_str, &window_clone, &channel_name_clone);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    
+    // stderr 실시간 읽기 스레드
+    let window_clone = window.clone();
+    let channel_name_clone = channel_name.to_string();
+    let is_cancelled_stderr = state.is_cancelled.clone();
+    let last_activity_stderr = last_activity.clone();
+    
+    let stderr_handle = thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        
+        for line in reader.lines() {
+            // 중단 신호 확인
+            if is_cancelled_stderr.load(Ordering::SeqCst) {
+                break;
+            }
+            
+            match line {
+                Ok(line_str) => {
+                    if !line_str.trim().is_empty() {
+                        // 🔥 NEW: 활동 시간 업데이트 (타임아웃 방지)
+                        if let Ok(mut last_time) = last_activity_stderr.lock() {
+                            *last_time = Instant::now();
+                        }
+                        
+                        let stderr_progress = DownloadProgress {
+                            channel: channel_name_clone.clone(),
+                            status: "정보".to_string(),
+                            progress: 0.0,
+                            current_video: format!("📺 {}", channel_name_clone),
+                            total_videos: 0,
+                            completed_videos: 0,
+                            log_message: format!("⚠️ {}", line_str),
+                        };
+                        let _ = window_clone.emit("download-progress", &stderr_progress);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    
+    // 프로세스 완료 대기 (타임아웃은 위에서 이미 설정됨)
+    let mut process_completed = false;
+    while !process_completed {
+        // 중단 신호 확인
+        if state.is_cancelled.load(Ordering::SeqCst) {
+            return Err("다운로드가 중단되었습니다".to_string());
+        }
+        
+        // 🔥 NEW: 타임아웃 감지 및 자동 kill (30초로 단축)
+        if let Ok(last_time) = last_activity.lock() {
+            if last_time.elapsed() > timeout_duration {
+                eprintln!("⚠️ 15초간 로그 없음 - 프로세스 강제 종료");
+                let _ = child.kill();
+                return Err("프로세스 타임아웃으로 중단되었습니다 (15초간 응답 없음)".to_string());
+            }
+        }
+        
+        // 프로세스 상태 확인
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                process_completed = true;
+            }
+            Ok(None) => {
+                // 아직 실행 중, 잠시 대기
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => {
+                process_completed = true;
+            }
+        }
+    }
+    
+    // 스레드 완료 대기
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+    
+    // 통계 정보 수집
+    if let Ok(count) = channel_total_rx.try_recv() {
+        channel_total_videos = count;
+    }
+    if let Ok(count) = channel_downloaded_rx.try_recv() {
+        channel_downloaded_videos = count;
+    }
+    
+    // 프로세스 최종 상태 확인
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    
+    Ok((channel_total_videos, channel_downloaded_videos, output.status))
+}
+
 // 비디오 다운로드 (실시간 진행 상황 포함)
 #[command]
 async fn download_videos_with_progress(window: Window, state: State<'_, DownloadState>) -> Result<String, String> {
@@ -594,7 +840,7 @@ async fn download_videos_with_progress(window: Window, state: State<'_, Download
     
     // Python 가상환경 확인
     let project_root = get_project_root();
-    let venv_python = project_root.join("venv").join("bin").join("python");
+    let venv_python = project_root.join("venv").join("bin").join("python3");
     if !venv_python.exists() {
         return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
     }
@@ -602,194 +848,114 @@ async fn download_videos_with_progress(window: Window, state: State<'_, Download
     // 다운로드 시작 시 중단 플래그 초기화
     state.is_cancelled.store(false, Ordering::SeqCst);
     
-    let mut results = Vec::new();
-    let total_channels = enabled_channels.len() as u32;
+    // 시작 메시지
+    let start_progress = DownloadProgress {
+        channel: "전체".to_string(),
+        status: "시작".to_string(),
+        progress: 0.0,
+        current_video: "배치 다운로드 시작".to_string(),
+        total_videos: 0,
+        completed_videos: 0,
+        log_message: "🚀 모든 활성화된 채널의 배치 다운로드를 시작합니다...".to_string(),
+    };
+    let _ = window.emit("download-progress", &start_progress);
     
-    // 🔥 FIXED: 전체 비디오 수를 동적으로 계산
-    let mut total_videos_processed = 0u32;
-    let mut total_videos_downloaded = 0u32;
+    // 🔥 IMPROVED: batch 명령어 사용으로 모든 채널을 안정적으로 배치 처리 + 디버그 모드
+    let child = Command::new(&venv_python)
+        .args(&["-u", "-m", "ydh", "batch"])
+        .current_dir(&project_root)
+        .env("PYTHONUNBUFFERED", "1")        // Python 출력 버퍼링 방지
+        .env("PYTHONIOENCODING", "utf-8")    // UTF-8 인코딩 강제
+        .env("YDH_YTDLP_SLEEP_INTERVAL", "2")     // 요청 간 2초 지연
+        .env("YDH_YTDLP_MAX_SLEEP_INTERVAL", "5") // 최대 5초 랜덤 지연
+        .env("YDH_YTDLP_SLEEP_REQUESTS", "20")    // 20회마다 추가 슬립
+        .env("YDH_YTDLP_SOCKET_TIMEOUT", "8")     // 8초 소켓 타임아웃
+        .env("YDH_YTDLP_RETRIES", "1")            // 1회 재시도
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
     
-    for (index, channel) in enabled_channels.iter().enumerate() {
-        // 중단 신호 확인
-        if state.is_cancelled.load(Ordering::SeqCst) {
-            let cancel_progress = DownloadProgress {
-                channel: "전체".to_string(),
-                status: "중단됨".to_string(),
-                progress: (index as f32 / total_channels as f32) * 100.0,
-                current_video: "사용자 요청으로 중단".to_string(),
-                total_videos: total_videos_processed,
-                completed_videos: total_videos_downloaded,
-                log_message: "🛑 다운로드가 사용자 요청으로 중단되었습니다".to_string(),
-            };
-            let _ = window.emit("download-progress", &cancel_progress);
-            return Ok("다운로드가 중단되었습니다".to_string());
-        }
-        // 진행 상황 업데이트
-        let progress = DownloadProgress {
-            channel: channel.name.clone(),
-            status: "분석 중".to_string(),
-            progress: (index as f32 / total_channels as f32) * 100.0,
-            current_video: format!("채널 분석: {}", channel.name),
-            total_videos: 0, // 아직 알 수 없음
-            completed_videos: total_videos_downloaded,
-            log_message: format!("📺 {} 채널 분석 시작...", channel.name),
-        };
-        
-        // 프론트엔드에 진행 상황 전송
-        let _ = window.emit("download-progress", &progress);
-        
-        // Python 명령어 실행 (실시간 출력 캡처)
-        let child = Command::new(&venv_python)
-            .args(&["-m", "ydh", "ingest", &channel.url])
-            .current_dir(&project_root)
-            .env("PYTHONUNBUFFERED", "1")        // Python 출력 버퍼링 방지
-            .env("PYTHONIOENCODING", "utf-8")    // UTF-8 인코딩 강제
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        
-        // 현재 프로세스를 상태에 저장 (중단을 위해)
-        {
-            if let Ok(mut process_guard) = state.current_process.lock() {
-                *process_guard = Some(child);
-            }
-        }
-        
-        // 프로세스를 다시 가져와서 처리
-        let child = if let Ok(mut process_guard) = state.current_process.lock() {
-            process_guard.take().unwrap()
-        } else {
-            return Err("프로세스 접근 실패".to_string());
-        };
-        
-        // 🔥 NEW: 채널별 비디오 통계 추적
-        let mut channel_total_videos = 0u32;
-        let mut channel_downloaded_videos = 0u32;
-        
-        // 간단하게 프로세스 완료까지 대기하고 출력 읽기
-        let output = child.wait_with_output().map_err(|e| e.to_string())?;
-        
-        // stdout 처리 - 한 번에 모든 라인 처리
-        let stdout_str = String::from_utf8_lossy(&output.stdout);
-        for line in stdout_str.lines() {
-            // 중단 신호 확인
-            if state.is_cancelled.load(Ordering::SeqCst) {
-                let cancel_progress = DownloadProgress {
-                    channel: channel.name.clone(),
-                    status: "중단됨".to_string(),
-                    progress: (index as f32 / total_channels as f32) * 100.0,
-                    current_video: "사용자 요청으로 중단".to_string(),
-                    total_videos: channel_total_videos,
-                    completed_videos: total_videos_downloaded,
-                    log_message: "🛑 다운로드가 중단되었습니다".to_string(),
-                };
-                let _ = window.emit("download-progress", &cancel_progress);
-                return Ok("다운로드가 중단되었습니다".to_string());
-            }
-            
-            // 로그 메시지 즉시 전송
-            let log_progress = DownloadProgress {
-                channel: channel.name.clone(),
-                status: "진행 중".to_string(),
-                progress: (index as f32 / total_channels as f32) * 50.0,
-                current_video: format!("📺 {}", channel.name),
-                total_videos: 1,
-                completed_videos: 0,
-                log_message: line.to_string(),
-            };
-            let _ = window.emit("download-progress", &log_progress);
-            
-            // 비디오 수 파싱
-            if line.contains("총") && line.contains("개 영상을 발견했습니다") {
-                if let Some(start) = line.find("총 ") {
-                    if let Some(end) = line[start..].find("개 영상을 발견했습니다") {
-                        let number_str = &line[start + 2..start + end].trim();
-                        if let Ok(count) = number_str.parse::<u32>() {
-                            channel_total_videos = count;
-                        }
-                    }
-                }
-            }
-            
-            // 다운로드 완료 수 파싱
-            if line.contains("다운로드 완료:") && line.contains("개 성공") {
-                if let Some(start) = line.find("다운로드 완료: ") {
-                    if let Some(end) = line[start..].find("개 성공") {
-                        let number_str = &line[start + 7..start + end].trim();
-                        if let Ok(count) = number_str.parse::<u32>() {
-                            channel_downloaded_videos = count;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // stderr 처리 - 경고 및 오류 메시지
-        let stderr_str = String::from_utf8_lossy(&output.stderr);
-        for line in stderr_str.lines() {
-            if !line.trim().is_empty() {
-                let stderr_progress = DownloadProgress {
-                    channel: channel.name.clone(),
-                    status: "정보".to_string(),
-                    progress: (index as f32 / total_channels as f32) * 50.0,
-                    current_video: format!("📺 {}", channel.name),
-                    total_videos: 1,
-                    completed_videos: 0,
-                    log_message: format!("⚠️ {}", line),
-                };
-                let _ = window.emit("download-progress", &stderr_progress);
-            }
-        }
-        
-        // 🔥 FIXED: 채널별 통계 업데이트
-        total_videos_processed += channel_total_videos;
-        total_videos_downloaded += channel_downloaded_videos;
-        
-        if output.status.success() {
-            results.push(format!("✅ {}: 성공 ({}/{}개)", channel.name, channel_downloaded_videos, channel_total_videos));
-            let final_progress = DownloadProgress {
-                channel: channel.name.clone(),
-                status: "완료".to_string(),
-                progress: ((index + 1) as f32 / total_channels as f32) * 100.0,
-                current_video: format!("채널: {}", channel.name),
-                total_videos: channel_total_videos,
-                completed_videos: channel_downloaded_videos,
-                log_message: format!("✅ {} 채널 다운로드 완료! ({}/{}개)", channel.name, channel_downloaded_videos, channel_total_videos),
-            };
-            let _ = window.emit("download-progress", &final_progress);
-        } else {
-            let error = String::from_utf8_lossy(&output.stderr);
-            results.push(format!("❌ {}: {}", channel.name, error));
-            let error_progress = DownloadProgress {
-                channel: channel.name.clone(),
-                status: "실패".to_string(),
-                progress: ((index + 1) as f32 / total_channels as f32) * 100.0,
-                current_video: format!("채널: {}", channel.name),
-                total_videos: channel_total_videos,
-                completed_videos: channel_downloaded_videos,
-                log_message: format!("❌ {} 채널 다운로드 실패: {}", channel.name, error),
-            };
-            let _ = window.emit("download-progress", &error_progress);
+    // 현재 프로세스를 상태에 저장 (중단을 위해)
+    {
+        if let Ok(mut process_guard) = state.current_process.lock() {
+            *process_guard = Some(child);
         }
     }
     
-    // 최종 완료 메시지
-    let final_progress = DownloadProgress {
-        channel: "전체".to_string(),
-        status: "완료".to_string(),
-        progress: 100.0,
-        current_video: "모든 채널".to_string(),
-        total_videos: total_videos_processed,
-        completed_videos: total_videos_downloaded,
-        log_message: format!("🎉 모든 채널 다운로드 완료! (총 {}/{}개)", total_videos_downloaded, total_videos_processed),
+    // 프로세스를 다시 가져와서 처리
+    let child = if let Ok(mut process_guard) = state.current_process.lock() {
+        process_guard.take().unwrap()
+    } else {
+        return Err("프로세스 접근 실패".to_string());
     };
-    let _ = window.emit("download-progress", &final_progress);
     
-    Ok(results.join("\n"))
+    // 🔥 NEW: 실시간 출력 캡처로 프로세스 실행
+    match run_process_with_realtime_output(child, &window, "전체 채널", &state) {
+        Ok((total, downloaded, status)) => {
+            if status.success() {
+                let success_progress = DownloadProgress {
+                    channel: "전체".to_string(),
+                    status: "완료".to_string(),
+                    progress: 100.0,
+                    current_video: "모든 채널".to_string(),
+                    total_videos: total,
+                    completed_videos: downloaded,
+                    log_message: format!("🎉 배치 다운로드 완료! (총 {}/{}개)", downloaded, total),
+                };
+                let _ = window.emit("download-progress", &success_progress);
+                return Ok(format!("✅ 배치 다운로드 성공: {}/{}개 영상 다운로드 완료", downloaded, total));
+            } else {
+                let error_progress = DownloadProgress {
+                    channel: "전체".to_string(),
+                    status: "실패".to_string(),
+                    progress: 100.0,
+                    current_video: "모든 채널".to_string(),
+                    total_videos: total,
+                    completed_videos: downloaded,
+                    log_message: "❌ 배치 다운로드 중 오류 발생".to_string(),
+                };
+                let _ = window.emit("download-progress", &error_progress);
+                return Err("배치 다운로드 중 오류가 발생했습니다".to_string());
+            }
+        }
+        Err(err) => {
+            if err.contains("중단") {
+                return Ok("다운로드가 중단되었습니다".to_string());
+            } else {
+                return Err(format!("배치 다운로드 실패: {}", err));
+            }
+        }
+    }
 }
 
-// 품질 매개변수를 받는 다운로드 함수
+// 기존 다운로드 함수 (호환성 유지)
+#[command]
+async fn download_videos() -> Result<String, String> {
+    // 단순히 배치 다운로드 함수 호출
+    let project_root = get_project_root();
+    let venv_python = project_root.join("venv").join("bin").join("python3");
+    if !venv_python.exists() {
+        return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
+    }
+
+    let output = Command::new(&venv_python)
+        .args(&["-u", "-m", "ydh", "batch"])
+        .current_dir(&project_root)
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok("✅ 배치 다운로드 완료".to_string())
+    } else {
+        let error = String::from_utf8_lossy(&output.stderr);
+        Err(format!("❌ 배치 다운로드 실패: {}", error))
+    }
+}
+
+// 품질 매개변수를 받는 다운로드 함수 (batch 처리)
 #[command]
 async fn download_videos_with_progress_and_quality(window: Window, state: State<'_, DownloadState>, quality: String) -> Result<String, String> {
     let channels = list_channels()?;
@@ -801,7 +967,7 @@ async fn download_videos_with_progress_and_quality(window: Window, state: State<
     
     // Python 가상환경 확인
     let project_root = get_project_root();
-    let venv_python = project_root.join("venv").join("bin").join("python");
+    let venv_python = project_root.join("venv").join("bin").join("python3");
     if !venv_python.exists() {
         return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
     }
@@ -809,178 +975,91 @@ async fn download_videos_with_progress_and_quality(window: Window, state: State<
     // 다운로드 시작 시 중단 플래그 초기화
     state.is_cancelled.store(false, Ordering::SeqCst);
     
-    let mut results: Vec<String> = Vec::new();
-    let total_channels = enabled_channels.len() as u32;
+    // 시작 메시지
+    let start_progress = DownloadProgress {
+        channel: "전체".to_string(),
+        status: "시작".to_string(),
+        progress: 0.0,
+        current_video: format!("배치 다운로드 시작 (품질: {})", quality),
+        total_videos: 0,
+        completed_videos: 0,
+        log_message: format!("🚀 모든 활성화된 채널의 배치 다운로드를 시작합니다... (품질: {})", quality),
+    };
+    let _ = window.emit("download-progress", &start_progress);
     
-    // 🔥 FIXED: 전체 비디오 수를 동적으로 계산
-    let mut total_videos_processed = 0u32;
-    let mut total_videos_downloaded = 0u32;
+    // 🔥 IMPROVED: batch 명령어 사용으로 모든 채널을 안정적으로 배치 처리
+    let child = Command::new(&venv_python)
+        .args(&["-u", "-m", "ydh", "batch"])
+        .current_dir(&project_root)
+        .env("PYTHONUNBUFFERED", "1")        // Python 출력 버퍼링 방지
+        .env("PYTHONIOENCODING", "utf-8")    // UTF-8 인코딩 강제
+        .env("YDH_YTDLP_SLEEP_INTERVAL", "2")     // 요청 간 2초 지연
+        .env("YDH_YTDLP_MAX_SLEEP_INTERVAL", "5") // 최대 5초 랜덤 지연
+        .env("YDH_YTDLP_SLEEP_REQUESTS", "20")    // 20회마다 추가 슬립
+        .env("YDH_YTDLP_SOCKET_TIMEOUT", "8")     // 8초 소켓 타임아웃
+        .env("YDH_YTDLP_RETRIES", "1")            // 1회 재시도
+        .env("YDH_VIDEO_QUALITY", &quality)  // 품질 설정
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
     
-    for (index, channel) in enabled_channels.iter().enumerate() {
-        // 중단 신호 확인
-        if state.is_cancelled.load(Ordering::SeqCst) {
-            let cancel_progress = DownloadProgress {
-                channel: "전체".to_string(),
-                status: "중단됨".to_string(),
-                progress: (index as f32 / total_channels as f32) * 100.0,
-                current_video: "사용자 요청으로 중단".to_string(),
-                total_videos: total_videos_processed,
-                completed_videos: total_videos_downloaded,
-                log_message: "🛑 다운로드가 사용자 요청으로 중단되었습니다".to_string(),
-            };
-            let _ = window.emit("download-progress", &cancel_progress);
-            return Ok("다운로드가 중단되었습니다".to_string());
-        }
-        // 진행 상황 업데이트
-        let progress = DownloadProgress {
-            channel: channel.name.clone(),
-            status: "분석 중".to_string(),
-            progress: (index as f32 / total_channels as f32) * 100.0,
-            current_video: format!("채널 분석: {}", channel.name),
-            total_videos: 0, // 아직 알 수 없음
-            completed_videos: total_videos_downloaded,
-            log_message: format!("📺 {} 채널 분석 시작...", channel.name),
-        };
-        
-        // 프론트엔드에 진행 상황 전송
-        let _ = window.emit("download-progress", &progress);
-        
-        // 🔥 NEW: 품질을 환경변수로 설정 + 버퍼링 방지
-        let child = Command::new(&venv_python)
-            .args(&["-m", "ydh", "ingest", &channel.url])
-            .current_dir(&project_root)
-            .env("YDH_VIDEO_QUALITY", &quality)  // 품질 환경변수 설정
-            .env("PYTHONUNBUFFERED", "1")        // Python 출력 버퍼링 방지
-            .env("PYTHONIOENCODING", "utf-8")    // UTF-8 인코딩 강제
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-            
-        // 현재 프로세스를 상태에 저장 (중단을 위해)
-        {
-            if let Ok(mut process_guard) = state.current_process.lock() {
-                *process_guard = Some(child);
-            }
-        }
-        
-        // 프로세스를 다시 가져와서 처리
-        let child = if let Ok(mut process_guard) = state.current_process.lock() {
-            process_guard.take().unwrap()
-        } else {
-            return Err("프로세스 접근 실패".to_string());
-        };
-        
-        // 🔥 NEW: 채널별 비디오 통계 추적
-        let mut channel_total_videos = 0u32;
-        let mut channel_downloaded_videos = 0u32;
-        
-        // 간단하게 프로세스 완료까지 대기하고 출력 읽기
-        let output = child.wait_with_output().map_err(|e| e.to_string())?;
-        
-        // stdout 처리 - 한 번에 모든 라인 처리
-        let stdout_str = String::from_utf8_lossy(&output.stdout);
-        for line in stdout_str.lines() {
-            // 중단 신호 확인
-            if state.is_cancelled.load(Ordering::SeqCst) {
-                let cancel_progress = DownloadProgress {
-                    channel: channel.name.clone(),
-                    status: "중단됨".to_string(),
-                    progress: (index as f32 / total_channels as f32) * 100.0,
-                    current_video: "사용자 요청으로 중단".to_string(),
-                    total_videos: channel_total_videos,
-                    completed_videos: total_videos_downloaded,
-                    log_message: "🛑 다운로드가 중단되었습니다".to_string(),
-                };
-                let _ = window.emit("download-progress", &cancel_progress);
-                return Ok("다운로드가 중단되었습니다".to_string());
-            }
-            
-            // 로그 메시지 즉시 전송
-            let log_progress = DownloadProgress {
-                channel: channel.name.clone(),
-                status: "진행 중".to_string(),
-                progress: (index as f32 / total_channels as f32) * 50.0,
-                current_video: format!("📺 {}", channel.name),
-                total_videos: 1,
-                completed_videos: 0,
-                log_message: line.to_string(),
-            };
-            let _ = window.emit("download-progress", &log_progress);
-            
-            // 비디오 수 파싱
-            if line.contains("총") && line.contains("개 영상을 발견했습니다") {
-                if let Some(start) = line.find("총 ") {
-                    if let Some(end) = line[start..].find("개 영상을 발견했습니다") {
-                        let number_str = &line[start + 2..start + end].trim();
-                        if let Ok(count) = number_str.parse::<u32>() {
-                            channel_total_videos = count;
-                        }
-                    }
-                }
-            }
-            
-            // 다운로드 완료 수 파싱
-            if line.contains("다운로드 완료:") && line.contains("개 성공") {
-                if let Some(start) = line.find("다운로드 완료: ") {
-                    if let Some(end) = line[start..].find("개 성공") {
-                        let number_str = &line[start + 7..start + end].trim();
-                        if let Ok(count) = number_str.parse::<u32>() {
-                            channel_downloaded_videos = count;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // stderr 처리 - 경고 및 오류 메시지
-        let stderr_str = String::from_utf8_lossy(&output.stderr);
-        for line in stderr_str.lines() {
-            if !line.trim().is_empty() {
-                let stderr_progress = DownloadProgress {
-                    channel: channel.name.clone(),
-                    status: "정보".to_string(),
-                    progress: (index as f32 / total_channels as f32) * 50.0,
-                    current_video: format!("📺 {}", channel.name),
-                    total_videos: 1,
-                    completed_videos: 0,
-                    log_message: format!("⚠️ {}", line),
-                };
-                let _ = window.emit("download-progress", &stderr_progress);
-            }
-        }
-        
-        // 업데이트된 통계를 전체 카운터에 반영
-        total_videos_processed += channel_total_videos;
-        total_videos_downloaded += channel_downloaded_videos;
-
-        // 채널 완료 상태 업데이트
-        let final_progress = DownloadProgress {
-            channel: channel.name.clone(),
-            status: if output.status.success() { "완료".to_string() } else { "실패".to_string() },
-            progress: ((index + 1) as f32 / total_channels as f32) * 100.0,
-            current_video: format!("{} 채널 처리 완료", channel.name),
-            total_videos: total_videos_processed,
-            completed_videos: total_videos_downloaded,
-            log_message: format!("📺 {} 채널: {}개 중 {}개 영상 다운로드 완료",
-                channel.name, channel_total_videos, channel_downloaded_videos),
-        };
-        let _ = window.emit("download-progress", &final_progress);
-
-        // 결과 저장
-        if output.status.success() {
-            results.push(format!("✅ {}: {}개 영상 다운로드 완료", channel.name, channel_downloaded_videos));
-        } else {
-            results.push(format!("❌ {}: 다운로드 실패", channel.name));
+    // 현재 프로세스를 상태에 저장 (중단을 위해)
+    {
+        if let Ok(mut process_guard) = state.current_process.lock() {
+            *process_guard = Some(child);
         }
     }
     
-    Ok(results.join("\n"))
+    // 프로세스를 다시 가져와서 처리
+    let child = if let Ok(mut process_guard) = state.current_process.lock() {
+        process_guard.take().unwrap()
+    } else {
+        return Err("프로세스 접근 실패".to_string());
+    };
+    
+    // 🔥 NEW: 실시간 출력 캡처로 프로세스 실행
+    match run_process_with_realtime_output(child, &window, "전체 채널", &state) {
+        Ok((total, downloaded, status)) => {
+            if status.success() {
+                let success_progress = DownloadProgress {
+                    channel: "전체".to_string(),
+                    status: "완료".to_string(),
+                    progress: 100.0,
+                    current_video: "모든 채널".to_string(),
+                    total_videos: total,
+                    completed_videos: downloaded,
+                    log_message: format!("🎉 배치 다운로드 완료! (총 {}/{}개, 품질: {})", downloaded, total, quality),
+                };
+                let _ = window.emit("download-progress", &success_progress);
+                Ok(format!("✅ 배치 다운로드 성공: {}/{}개 영상 다운로드 완료 (품질: {})", downloaded, total, quality))
+            } else {
+                let error_progress = DownloadProgress {
+                    channel: "전체".to_string(),
+                    status: "실패".to_string(),
+                    progress: 100.0,
+                    current_video: "모든 채널".to_string(),
+                    total_videos: total,
+                    completed_videos: downloaded,
+                    log_message: "❌ 배치 다운로드 중 오류 발생".to_string(),
+                };
+                let _ = window.emit("download-progress", &error_progress);
+                return Err("배치 다운로드 중 오류가 발생했습니다".to_string());
+            }
+        }
+        Err(err) => {
+            if err.contains("중단") {
+                return Ok("다운로드가 중단되었습니다".to_string());
+            } else {
+                return Err(format!("배치 다운로드 실패: {}", err));
+            }
+        }
+    }
 }
 
-// 기존 다운로드 함수 (호환성 유지)
+// 🔍 전체 무결성 검사 다운로드 (--full-scan)
 #[command]
-async fn download_videos() -> Result<String, String> {
+async fn download_videos_full_scan_with_progress(window: Window, state: State<'_, DownloadState>) -> Result<String, String> {
     let channels = list_channels()?;
     let enabled_channels: Vec<_> = channels.into_iter().filter(|c| c.enabled).collect();
     
@@ -990,36 +1069,93 @@ async fn download_videos() -> Result<String, String> {
     
     // Python 가상환경 확인
     let project_root = get_project_root();
-    let venv_python = project_root.join("venv").join("bin").join("python");
+    let venv_python = project_root.join("venv").join("bin").join("python3");
     if !venv_python.exists() {
         return Err(format!("Python 가상환경이 설정되지 않았습니다: {}", venv_python.display()));
     }
     
-    let mut results = Vec::new();
+    // 다운로드 시작 시 중단 플래그 초기화
+    state.is_cancelled.store(false, Ordering::SeqCst);
     
-    for channel in enabled_channels {
-        let output = Command::new(&venv_python)
-            .args(&["-m", "ydh", "ingest", &channel.url])
-            .current_dir(&project_root)
-            .output()
-            .map_err(|e| e.to_string())?;
-        
-        if output.status.success() {
-            results.push(format!("✅ {}: 성공", channel.name));
-        } else {
-            let error = String::from_utf8_lossy(&output.stderr);
-            results.push(format!("❌ {}: {}", channel.name, error));
+    // 시작 메시지
+    let start_progress = DownloadProgress {
+        channel: "전체".to_string(),
+        status: "시작".to_string(),
+        progress: 0.0,
+        current_video: "전체 무결성 검사 시작".to_string(),
+        total_videos: 0,
+        completed_videos: 0,
+        log_message: "🔍 전체 무결성 검사를 시작합니다. 모든 영상을 확인하여 누락된 영상을 복구합니다...".to_string(),
+    };
+    let _ = window.emit("download-progress", &start_progress);
+    
+    // 🔥 전체 무결성 검사 모드: --full-scan 플래그 사용
+    let child = Command::new(&venv_python)
+        .args(&["-u", "-m", "ydh", "batch", "--full-scan"])
+        .current_dir(&project_root)
+        .env("PYTHONUNBUFFERED", "1")        // Python 출력 버퍼링 방지
+        .env("PYTHONIOENCODING", "utf-8")    // UTF-8 인코딩 강제
+        .env("YDH_YTDLP_SLEEP_INTERVAL", "2")     // 요청 간 2초 지연
+        .env("YDH_YTDLP_MAX_SLEEP_INTERVAL", "5") // 최대 5초 랜덤 지연
+        .env("YDH_YTDLP_SLEEP_REQUESTS", "20")    // 20회마다 추가 슬립
+        .env("YDH_YTDLP_SOCKET_TIMEOUT", "10")    // 전체 검사시 타임아웃 증가
+        .env("YDH_YTDLP_RETRIES", "2")            // 전체 검사시 재시도 횟수 증가
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    
+    // 현재 프로세스를 상태에 저장 (중단을 위해)
+    {
+        if let Ok(mut process_guard) = state.current_process.lock() {
+            *process_guard = Some(child);
         }
     }
     
-    Ok(results.join("\n"))
-}
-
-// 채널별 임베딩 생성을 위한 상태 관리
-#[derive(Default, Clone)]
-struct EmbeddingState {
-    is_cancelled: Arc<AtomicBool>,
-    current_process: Arc<Mutex<Option<std::process::Child>>>,
+    // 프로세스를 다시 가져와서 처리
+    let child = if let Ok(mut process_guard) = state.current_process.lock() {
+        process_guard.take().unwrap()
+    } else {
+        return Err("프로세스 접근 실패".to_string());
+    };
+    
+    // 🔥 실시간 출력 캡처로 프로세스 실행
+    match run_process_with_realtime_output(child, &window, "전체 무결성 검사", &state) {
+        Ok((total, downloaded, status)) => {
+            if status.success() {
+                let success_progress = DownloadProgress {
+                    channel: "전체".to_string(),
+                    status: "완료".to_string(),
+                    progress: 100.0,
+                    current_video: "모든 채널".to_string(),
+                    total_videos: total,
+                    completed_videos: downloaded,
+                    log_message: format!("🎉 전체 무결성 검사 완료! 누락된 {}개 영상을 복구했습니다.", downloaded),
+                };
+                let _ = window.emit("download-progress", &success_progress);
+                return Ok(format!("✅ 전체 무결성 검사 성공: {}개 누락 영상 복구 완료", downloaded));
+            } else {
+                let error_progress = DownloadProgress {
+                    channel: "전체".to_string(),
+                    status: "실패".to_string(),
+                    progress: 100.0,
+                    current_video: "모든 채널".to_string(),
+                    total_videos: total,
+                    completed_videos: downloaded,
+                    log_message: "❌ 전체 무결성 검사 중 오류 발생".to_string(),
+                };
+                let _ = window.emit("download-progress", &error_progress);
+                return Err("전체 무결성 검사 중 오류가 발생했습니다".to_string());
+            }
+        }
+        Err(err) => {
+            if err.contains("중단") {
+                return Ok("전체 무결성 검사가 중단되었습니다".to_string());
+            } else {
+                return Err(format!("전체 무결성 검사 실패: {}", err));
+            }
+        }
+    }
 }
 
 // 사용 가능한 채널 목록 조회
@@ -1404,6 +1540,371 @@ async fn ask_rag(query: String) -> Result<String, String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("RAG 질문 실패: {}", stderr))
+    }
+}
+
+// 채널별 AI 질문 (채널 선택 포함)
+#[command]
+async fn ask_ai_with_channel(query: String, channel_name: String) -> Result<String, String> {
+    let project_root = get_project_root();
+    let rag_script = project_root.join("vault").join("90_indices").join("rag.py");
+    
+    if !rag_script.exists() {
+        return Err("RAG 스크립트를 찾을 수 없습니다".to_string());
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[rag_script.to_str().unwrap(), &query, &channel_name])
+        .current_dir(&project_root)
+        .env("PYTHONUNBUFFERED", "1")
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("AI 질문 실패: {}", stderr))
+    }
+}
+
+// Gemini RAG 함수 추가
+#[command]
+async fn ask_gemini_with_channel(query: String, channel_name: String) -> Result<String, String> {
+    let project_root = get_project_root();
+    let rag_script = project_root.join("vault").join("90_indices").join("rag_gemini.py");
+    
+    if !rag_script.exists() {
+        return Err("Gemini RAG 스크립트를 찾을 수 없습니다".to_string());
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[rag_script.to_str().unwrap(), "ask", &query, "--channel", &channel_name])
+        .current_dir(&project_root)
+        .env("PYTHONUNBUFFERED", "1")
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Gemini RAG 질문 실패: {}", stderr))
+    }
+}
+
+// 통합 AI 함수 (모델 선택 가능)
+#[command]
+async fn ask_ai_universal(query: String, channel_name: String, model: String) -> Result<String, String> {
+    match model.as_str() {
+        "gemini" => ask_gemini_with_channel(query, channel_name).await,
+        "deepseek" | _ => ask_ai_with_channel(query, channel_name).await,
+    }
+}
+
+// Gemini용 채널 목록 조회
+#[command]
+async fn get_available_channels_for_gemini() -> Result<Vec<AIChannelInfo>, String> {
+    let project_root = get_project_root();
+    let rag_script = project_root.join("vault").join("90_indices").join("rag_gemini.py");
+    
+    if !rag_script.exists() {
+        return Ok(vec![]);
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[rag_script.to_str().unwrap(), "channels"])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let channels = parse_channel_list(&stdout);
+        Ok(channels)
+    } else {
+        Err("Gemini 채널 목록 조회 실패".to_string())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct AIChannelInfo {
+    name: String,
+    video_count: u32,
+    description: Option<String>,
+    last_updated: Option<String>,
+}
+
+// AI용 채널 목록 조회
+#[command]
+async fn get_available_channels_for_ai() -> Result<Vec<AIChannelInfo>, String> {
+    let project_root = get_project_root();
+    let rag_script = project_root.join("vault").join("90_indices").join("rag.py");
+    
+    if !rag_script.exists() {
+        return Ok(vec![]);
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[rag_script.to_str().unwrap(), "channels"])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // 간단한 파싱으로 채널 목록 반환
+        let channels = parse_channel_list(&stdout);
+        Ok(channels)
+    } else {
+        Err("채널 목록 조회 실패".to_string())
+    }
+}
+
+fn parse_channel_list(output: &str) -> Vec<AIChannelInfo> {
+    let mut channels = Vec::new();
+    
+    println!("파싱할 출력:\n{}", output);
+    
+    // "1. channel_name (X개 영상)" 형태의 라인을 파싱 (이모지 및 기타 텍스트 무시)
+    for line in output.lines() {
+        println!("파싱 중인 라인: {}", line);
+        if let Some(captures) = regex::Regex::new(r"^\s*\d+\.\s*(.+?)\s*\((\d+)개\s*영상\)")
+            .ok()
+            .and_then(|re| re.captures(line))
+        {
+            if let (Some(name), Some(count_str)) = (captures.get(1), captures.get(2)) {
+                if let Ok(count) = count_str.as_str().parse::<u32>() {
+                    println!("파싱 성공: {} - {}개", name.as_str().trim(), count);
+                    channels.push(AIChannelInfo {
+                        name: name.as_str().trim().to_string(),
+                        video_count: count,
+                        description: None,
+                        last_updated: None,
+                    });
+                }
+            }
+        }
+    }
+    
+    println!("파싱된 채널 개수: {}", channels.len());
+    channels
+}
+
+// 채널별 프롬프트 조회
+#[command]
+async fn get_channel_prompt(channel_name: String) -> Result<String, String> {
+    let project_root = get_project_root();
+    let prompts_dir = project_root.join("vault").join("90_indices").join("prompts");
+    
+    // 채널명을 파일시스템에 안전한 형태로 변환
+    let safe_channel_name = sanitize_channel_name(&channel_name);
+    let channel_dir = prompts_dir.join(&safe_channel_name);
+    
+    if !channel_dir.exists() {
+        return Ok("{}".to_string()); // 기본 프롬프트 반환
+    }
+    
+    // 활성 버전 확인
+    let active_file = channel_dir.join("active.txt");
+    let version = if active_file.exists() {
+        std::fs::read_to_string(&active_file)
+            .map_err(|e| e.to_string())?
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(1)
+    } else {
+        1
+    };
+    
+    // 프롬프트 파일 읽기
+    let prompt_file = channel_dir.join(format!("prompt_v{}.json", version));
+    if prompt_file.exists() {
+        std::fs::read_to_string(&prompt_file).map_err(|e| e.to_string())
+    } else {
+        Ok("{}".to_string())
+    }
+}
+
+fn sanitize_channel_name(name: &str) -> String {
+    // 특수문자를 밑줄로 변경하고 길이 제한
+    let sanitized = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "가나다라마바사아자차카타파하".contains(c) || c == '_' || c == '-' {
+            c
+        } else {
+            '_'
+        })
+        .collect::<String>();
+    
+    // 연속된 밑줄 제거
+    let re = regex::Regex::new(r"_+").unwrap();
+    let result = re.replace_all(&sanitized, "_");
+    
+    // 앞뒤 밑줄 제거하고 길이 제한
+    result.trim_matches('_').chars().take(50).collect()
+}
+
+// 채널별 자동 프롬프트 생성
+#[command]
+async fn auto_generate_channel_prompt(channel_name: String) -> Result<u32, String> {
+    let project_root = get_project_root();
+    let auto_prompt_script = project_root.join("vault").join("90_indices").join("auto_prompt.py");
+    
+    if !auto_prompt_script.exists() {
+        return Err("자동 프롬프트 생성 스크립트를 찾을 수 없습니다".to_string());
+    }
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[auto_prompt_script.to_str().unwrap(), "generate", &channel_name])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // 버전 번호 추출 (예: "v3 생성 완료" -> 3)
+        if let Some(version_match) = stdout.find("v") {
+            if let Some(space_pos) = stdout[version_match..].find(" ") {
+                let version_str = &stdout[version_match + 1..version_match + space_pos];
+                if let Ok(version) = version_str.parse::<u32>() {
+                    return Ok(version);
+                }
+            }
+        }
+        Ok(1) // 기본값
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("자동 프롬프트 생성 실패: {}", stderr))
+    }
+}
+
+// 채널 분석 결과 조회
+#[command]
+async fn get_channel_analysis(channel_name: String) -> Result<String, String> {
+    let project_root = get_project_root();
+    let auto_prompt_script = project_root.join("vault").join("90_indices").join("auto_prompt.py");
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[auto_prompt_script.to_str().unwrap(), "analyze", &channel_name])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("채널 분석 실패: {}", stderr))
+    }
+}
+
+// 모든 채널 자동 프롬프트 일괄 생성
+#[command]
+async fn batch_generate_prompts() -> Result<String, String> {
+    let project_root = get_project_root();
+    let auto_prompt_script = project_root.join("vault").join("90_indices").join("auto_prompt.py");
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[auto_prompt_script.to_str().unwrap(), "batch"])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("일괄 프롬프트 생성 실패: {}", stderr))
+    }
+}
+
+// 채널별 프롬프트 저장
+#[command]
+async fn save_channel_prompt(channel_name: String, prompt_data: String) -> Result<u32, String> {
+    let project_root = get_project_root();
+    let prompts_dir = project_root.join("vault").join("90_indices").join("prompts");
+    
+    let safe_channel_name = sanitize_channel_name(&channel_name);
+    let channel_dir = prompts_dir.join(&safe_channel_name);
+    
+    // 디렉토리 생성
+    std::fs::create_dir_all(&channel_dir).map_err(|e| e.to_string())?;
+    
+    // 기존 버전 확인
+    let existing_versions: Vec<u32> = std::fs::read_dir(&channel_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let filename = entry.file_name().to_string_lossy().to_string();
+            if filename.starts_with("prompt_v") && filename.ends_with(".json") {
+                let version_str = filename.strip_prefix("prompt_v")?.strip_suffix(".json")?;
+                version_str.parse().ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+    
+    let new_version = existing_versions.iter().max().unwrap_or(&0) + 1;
+    
+    // 새 프롬프트 파일 저장
+    let prompt_file = channel_dir.join(format!("prompt_v{}.json", new_version));
+    std::fs::write(&prompt_file, &prompt_data).map_err(|e| e.to_string())?;
+    
+    // 활성 버전 업데이트
+    let active_file = channel_dir.join("active.txt");
+    std::fs::write(&active_file, new_version.to_string()).map_err(|e| e.to_string())?;
+    
+    Ok(new_version)
+}
+
+// 프롬프트 버전 목록 조회
+#[command]
+async fn get_prompt_versions(channel_name: String) -> Result<String, String> {
+    let project_root = get_project_root();
+    let auto_prompt_script = project_root.join("vault").join("90_indices").join("auto_prompt.py");
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[auto_prompt_script.to_str().unwrap(), "versions", &channel_name])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("프롬프트 버전 조회 실패: {}", stderr))
+    }
+}
+
+// 프롬프트 현황 조회
+#[command]
+async fn get_prompt_status() -> Result<String, String> {
+    let project_root = get_project_root();
+    let auto_prompt_script = project_root.join("vault").join("90_indices").join("auto_prompt.py");
+    
+    let venv_python = project_root.join("venv").join("bin").join("python");
+    let output = Command::new(&venv_python)
+        .args(&[auto_prompt_script.to_str().unwrap(), "status"])
+        .current_dir(&project_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("프롬프트 현황 조회 실패: {}", stderr))
     }
 }
 
@@ -2165,6 +2666,7 @@ fn main() {
             download_videos,
             download_videos_with_progress,
             download_videos_with_progress_and_quality,
+            download_videos_full_scan_with_progress,
             cancel_download,
             get_available_channels_for_embedding,
             create_embeddings_for_channels_with_progress,
@@ -2173,6 +2675,18 @@ fn main() {
             create_embeddings_with_progress,
             vector_search,
             ask_rag,
+            ask_ai_with_channel,
+            ask_gemini_with_channel,
+            ask_ai_universal,
+            get_available_channels_for_ai,
+            get_available_channels_for_gemini,
+            get_channel_prompt,
+            auto_generate_channel_prompt,
+            get_channel_analysis,
+            batch_generate_prompts,
+            save_channel_prompt,
+            get_prompt_versions,
+            get_prompt_status,
             check_integrity,
             check_integrity_with_progress,
             get_app_status,
@@ -2188,6 +2702,11 @@ fn main() {
             cancel_conversion,
             get_conversion_status
         ])
+        .setup(|app| {
+            let window = app.get_webview_window("main").unwrap();
+            window.show().unwrap();
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

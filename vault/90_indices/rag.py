@@ -10,8 +10,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from openai import OpenAI
+from local_gemini import LocalGeminiRAGInterface
 import re
+from prompt_manager import PromptManager
 
 # ---------------- 개선된 Prompt template ----------------
 PROMPT_TEMPLATE = """당신은 일본 부동산 투자 전문 AI 어시스턴트입니다.
@@ -38,6 +39,9 @@ PROMPT_TEMPLATE = """당신은 일본 부동산 투자 전문 AI 어시스턴트
 # 환경변수 로드
 load_dotenv()
 
+# 로컬 gemini 인터페이스 초기화
+local_gemini = LocalGeminiRAGInterface()
+
 # 경로 설정
 VAULT_ROOT = Path(__file__).parent.parent
 CHROMA_PATH = VAULT_ROOT / "90_indices" / "chroma"
@@ -51,15 +55,10 @@ def sanitize_collection_name(name: str) -> str:
 class ChannelRAG:
     def __init__(self):
         """채널별 격리 RAG 시스템 초기화"""
-        self.api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not self.api_key:
-            raise ValueError("❌ DEEPSEEK_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
-        
-        # DeepSeek 클라이언트 초기화
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url="https://api.deepseek.com"
-        )
+        # 로컬 Gemini 클라이언트 초기화
+        self.client = local_gemini
+        if not self.client.is_available():
+            raise ValueError("❌ 로컬 gemini가 사용 불가능합니다. 설치를 확인하세요.")
         
         # ChromaDB 클라이언트 초기화
         try:
@@ -70,6 +69,14 @@ class ChannelRAG:
             print(f"✅ ChromaDB 연결됨 (채널별 격리 모드)")
         except Exception as e:
             raise ValueError(f"❌ ChromaDB 로드 실패: {e}\n'python embed.py'를 먼저 실행하세요.")
+        
+        # 프롬프트 매니저 초기화
+        try:
+            self.prompt_manager = PromptManager(chroma_path=CHROMA_PATH)
+            print(f"✅ 프롬프트 매니저 초기화됨")
+        except Exception as e:
+            print(f"⚠️ 프롬프트 매니저 초기화 실패: {e}")
+            self.prompt_manager = None
     
     def list_available_channels(self):
         """사용 가능한 채널 목록 반환"""
@@ -102,31 +109,70 @@ class ChannelRAG:
 
     def get_collection_by_channel(self, channel_name: str):
         """채널명으로 컬렉션 가져오기"""
-        collection_name = f"channel_{sanitize_collection_name(channel_name)}"
         try:
-            return self.chroma_client.get_collection(collection_name)
-        except Exception:
+            collections = self.chroma_client.list_collections()
+            
+            for collection in collections:
+                if collection.name.startswith("channel_"):
+                    # 컬렉션에서 샘플 데이터 가져와서 채널명 확인
+                    try:
+                        sample = collection.get(limit=1, include=['metadatas'])
+                        if sample['metadatas'] and sample['metadatas'][0]:
+                            metadata_channel = sample['metadatas'][0].get('channel', '')
+                            if metadata_channel == channel_name:
+                                return collection
+                    except:
+                        continue
+            
+            return None
+        except Exception as e:
+            print(f"❌ 컬렉션 검색 실패: {e}")
+            return None
+
+    def generate_channel_specific_hyde(self, query: str, channel_name: str, channel_prompt: dict = None):
+        """채널 특화 HyDE 문서 생성"""
+        if not channel_prompt and self.prompt_manager:
+            channel_prompt = self.prompt_manager.get_channel_prompt(channel_name)
+        
+        try:
+            persona = channel_prompt.get('persona', '전문가') if channel_prompt else '전문가'
+            tone = channel_prompt.get('tone', '전문적인 스타일') if channel_prompt else '전문적인 스타일'
+            
+            prompt = f"""당신은 {channel_name} 채널의 {persona}입니다. 
+{tone}로 다음 질문에 대한 완벽한 답변이 담긴 150토큰 내외의 가상 문서를 작성하세요.
+
+질문: {query}
+
+이 채널의 관점에서 구체적인 수치, 지역명, 전략이 포함된 답변을 작성해주세요."""
+
+            hyde_doc = self.client.client.generate_text(
+                f"당신은 {channel_name} 채널 전문가입니다.\n\n{prompt}"
+            ).strip()
+            print(f"🎯 {channel_name} 채널 특화 HyDE: {hyde_doc[:50]}...")
+            return hyde_doc
+            
+        except Exception as e:
+            print(f"⚠️ 채널 특화 HyDE 생성 실패: {e}")
             return None
 
     def generate_hyde_documents(self, query: str, channel_name: str, n_docs=1):
-        """HyDE: 특정 채널 맥락에서 가상 문서 생성"""
+        """기존 HyDE + 채널 특화 HyDE"""
         hyde_docs = []
         
+        # 1. 채널 특화 HyDE
+        if self.prompt_manager:
+            channel_hyde = self.generate_channel_specific_hyde(query, channel_name)
+            if channel_hyde:
+                hyde_docs.append(channel_hyde)
+        
+        # 2. 기존 방식 HyDE (보완용)
         for i in range(n_docs):
             try:
-                response = self.client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": f"당신은 {channel_name} 채널의 일본 부동산 투자 전문가입니다. 이 채널의 관점에서 사용자 질문에 대한 완벽한 답변을 담은 150토큰 내외의 가상 문서를 작성하세요."},
-                        {"role": "user", "content": f"다음 질문에 대한 완벽한 답변이 담긴 문서를 {channel_name} 채널 관점에서 작성해주세요: '{query}'\n\n답변에는 구체적인 수치, 지역명, 투자 전략이 포함되어야 합니다."}
-                    ],
-                    max_tokens=150,
-                    temperature=0.7 + (i * 0.1)
-                )
-                
-                hyde_doc = response.choices[0].message.content.strip()
+                hyde_doc = self.client.client.generate_text(
+                    f"당신은 {channel_name} 채널의 일본 부동산 투자 전문가입니다.\n\n다음 질문에 대한 완벽한 답변이 담긴 문서를 {channel_name} 채널 관점에서 작성해주세요: '{query}'\n\n답변에는 구체적인 수치, 지역명, 투자 전략이 포함되어야 합니다."
+                ).strip()
                 hyde_docs.append(hyde_doc)
-                print(f"🎯 {channel_name} HyDE 문서 생성: {hyde_doc[:50]}...")
+                print(f"🎯 {channel_name} 기본 HyDE {i+1}: {hyde_doc[:50]}...")
                 
             except Exception as e:
                 print(f"⚠️ HyDE 문서 생성 실패: {e}")
@@ -136,7 +182,16 @@ class ChannelRAG:
 
     def rewrite_query(self, query: str, channel_name: str, context_sample: str = ""):
         """Query Rewriting: 특정 채널 맥락에서 검색 최적화"""
+        # 채널 프롬프트 가져오기
+        channel_prompt = {}
+        if self.prompt_manager:
+            channel_prompt = self.prompt_manager.get_channel_prompt(channel_name)
+        
         try:
+            # 채널 특성 반영
+            expertise_keywords = channel_prompt.get('expertise_keywords', [])
+            keywords_hint = f"주요 키워드: {', '.join(expertise_keywords[:5])}" if expertise_keywords else ""
+            
             prompt = f"""당신은 {channel_name} 채널 전문 검색 전문가입니다. 사용자의 질문을 이 채널의 컨텐츠에서 검색하기 쉬운 형태로 재작성하세요.
 
 ## 원본 질문
@@ -145,22 +200,17 @@ class ChannelRAG:
 ## 채널 컨텍스트
 {context_sample[:200]}
 
+## 채널 특성
+{keywords_hint}
+
 ### 지시사항
 {channel_name} 채널의 영상에서 찾을 수 있는 핵심 키워드와 개념을 포함한 검색 쿼리로 재작성하세요.
 **60토큰 이내로 간결하게 작성하세요.**
 """
             
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 검색 질의 최적화 전문가입니다."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=60,
-                temperature=0.5
-            )
-            
-            rewritten = response.choices[0].message.content.strip()
+            rewritten = self.client.client.generate_text(
+                f"당신은 {channel_name} 채널 전문 검색 질의 최적화 전문가입니다.\n\n{prompt}"
+            ).strip()
             print(f"🔄 {channel_name} Query Rewriting: {rewritten}")
             return rewritten
             
@@ -299,17 +349,9 @@ class ChannelRAG:
 선별된 영상 번호를 우선순위대로 나열하세요. (예: 1,3,5,2)
 최대 5개까지 선택하되, 정말 관련 없는 영상은 제외하세요."""
 
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 컨텐츠 관련성 평가 전문가입니다."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=50,
-                temperature=0.3
-            )
-            
-            selection = response.choices[0].message.content.strip()
+            selection = self.client.client.generate_text(
+                f"당신은 {channel_name} 채널 전문 컨텐츠 관련성 평가 전문가입니다.\n\n{prompt}"
+            ).strip()
             print(f"🤖 {channel_name} LLM 선별: {selection}")
             
             try:
@@ -330,8 +372,65 @@ class ChannelRAG:
             print(f"⚠️ LLM Re-Ranking 실패: {e}")
             return [r for r in candidates if r['similarity'] > 0.3][:5]
 
+    def generate_answer_with_channel_prompt(self, query: str, search_results: list, channel_name: str):
+        """채널별 프롬프트를 활용한 답변 생성"""
+        if not search_results:
+            return f"죄송합니다. {channel_name} 채널에서 관련된 정보를 찾을 수 없습니다."
+        
+        # 채널별 프롬프트 로드
+        channel_prompt = {}
+        if self.prompt_manager:
+            channel_prompt = self.prompt_manager.get_channel_prompt(channel_name)
+        
+        # 컨텍스트 구성
+        context_parts = []
+        for i, result in enumerate(search_results):
+            title = result['title']
+            content_preview = result['content'][:600]
+            video_id = result.get('video_id', '')
+            context_parts.append(f"[영상 {i+1}] {title}\n내용: {content_preview}\n영상ID: {video_id}")
+        
+        context = "\n\n".join(context_parts)
+        
+        # 채널별 맞춤 프롬프트 구성
+        system_prompt = channel_prompt.get('system_prompt', '').replace('{{channel_name}}', channel_name)
+        if not system_prompt:
+            system_prompt = f"당신은 {channel_name} 채널 전문 AI 어시스턴트입니다."
+        
+        rules = "\n".join([f"- {rule}" for rule in channel_prompt.get('rules', [])])
+        output_format = channel_prompt.get('output_format', {})
+        structure = output_format.get('structure', '답변 → 근거 → 요약')
+        
+        final_prompt = f"""{system_prompt}
+
+## 답변 규칙
+{rules}
+
+## 답변 구조
+{structure}
+
+## 검색된 컨텍스트 ({channel_name} 채널)
+{context}
+
+## 사용자 질문
+{query}
+
+위 규칙과 구조에 따라 {channel_name} 채널의 정보만을 바탕으로 답변해주세요."""
+
+        try:
+            return self.client.client.generate_text(
+                f"당신은 {channel_name} 채널 전문 AI 어시스턴트입니다.\n\n{final_prompt}"
+            ).strip()
+            
+        except Exception as e:
+            return f"답변 생성 중 오류가 발생했습니다: {e}"
+
     def generate_answer(self, query: str, search_results: list, channel_name: str):
-        """검색 결과를 바탕으로 답변 생성"""
+        """기존 답변 생성 (호환성 유지)"""
+        if self.prompt_manager:
+            return self.generate_answer_with_channel_prompt(query, search_results, channel_name)
+        
+        # 프롬프트 매니저가 없는 경우 기존 방식 사용
         if not search_results:
             return f"죄송합니다. {channel_name} 채널에서 관련된 정보를 찾을 수 없습니다. 다른 키워드로 다시 시도해보세요."
         
@@ -351,17 +450,9 @@ class ChannelRAG:
         )
         
         try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 일본 부동산 투자 AI 어시스턴트입니다. 이 채널의 정보만을 바탕으로 실용적이고 구체적인 조언을 제공하세요."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=800,
-                temperature=0.7
-            )
-            
-            return response.choices[0].message.content.strip()
+            return self.client.client.generate_text(
+                f"당신은 {channel_name} 채널 전문 일본 부동산 투자 AI 어시스턴트입니다. 이 채널의 정보만을 바탕으로 실용적이고 구체적인 조언을 제공하세요.\n\n{prompt}"
+            ).strip()
             
         except Exception as e:
             return f"답변 생성 중 오류가 발생했습니다: {e}"

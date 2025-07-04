@@ -1,0 +1,214 @@
+# Y-Data-House Gemini CLI 설정 파일
+
+[project]
+name = "y-data-house"
+description = "YouTube 비디오 다운로더와 transcription 시스템"
+version = "0.1.0"
+type = "python_rust_hybrid"
+
+[context]
+# 프로젝트 루트 디렉토리
+root_dir = "."
+
+# 주요 소스 디렉토리
+source_dirs = [
+    "src/ydh/",
+    "app/src/",
+    "app/src-tauri/src/",
+    "vault/90_indices/"
+]
+
+# 중요 설정 파일
+config_files = [
+    "pyproject.toml",
+    "app/src-tauri/Cargo.toml",
+    "app/package.json",
+    "app/src-tauri/tauri.conf.json",
+    "channels.txt",
+    "CLAUDE.md",
+    "GEMINI.md"
+]
+
+# 제외할 디렉토리
+exclude_dirs = [
+    "venv/",
+    "node_modules/",
+    "target/",
+    "dist/",
+    "build/",
+    "vault/10_videos/",
+    "vault/90_indices/chroma/",
+    "logs/",
+    ".git/",
+    "__pycache__/",
+    "*.pyc",
+    ".DS_Store"
+]
+
+[languages]
+# 주 언어 설정
+primary = "python"
+secondary = ["rust", "typescript", "javascript"]
+
+# 언어별 특성
+[languages.python]
+package_manager = "pip"
+virtual_env = "venv"
+test_framework = "pytest"
+linter = "black"
+type_checker = "mypy"
+
+[languages.rust]
+package_manager = "cargo"
+test_framework = "cargo test"
+linter = "clippy"
+formatter = "cargo fmt"
+
+[languages.typescript]
+package_manager = "pnpm"
+test_framework = "vitest"
+linter = "eslint"
+formatter = "prettier"
+
+[ai_integration]
+# 현재 AI 통합 상태
+primary_ai = "deepseek"
+secondary_ai = ["openai"]
+ai_role = "development_assistant"
+
+# AI 사용 용도
+use_cases = [
+    "code_review",
+    "bug_analysis", 
+    "architecture_advice",
+    "documentation",
+    "test_generation",
+    "debugging_assistance"
+]
+
+# 기존 AI 시스템과의 호환성
+compatibility_mode = true
+preserve_existing_ai = true
+
+[development]
+# 개발 환경 설정
+dev_server_port = 3000
+debug_mode = true
+hot_reload = true
+
+# 개발 도구
+tools = [
+    "black",      # Python 포맷터
+    "isort",      # Python import 정리
+    "mypy",       # Python 타입 체킹
+    "cargo fmt",  # Rust 포맷터
+    "cargo clippy", # Rust 린터
+    "pnpm",       # Node.js 패키지 매니저
+    "tauri"       # 데스크톱 앱 프레임워크
+]
+
+[build]
+# 빌드 명령어
+python_build = "python -m build"
+rust_build = "cargo build --release"
+desktop_build = "cd app && pnpm tauri build"
+dev_build = "make init && make desktop-dev"
+
+[testing]
+# 테스트 관련 설정
+test_files = [
+    "test_*.py",
+    "test_env.py",
+    "test_channel.py",
+    "test_chunk_downloader.py"
+]
+
+test_commands = [
+    "pytest tests/",
+    "cargo test",
+    "cd app && pnpm test"
+]
+
+[logging]
+# 로깅 설정
+log_level = "INFO"
+log_files = [
+    "logs/downloader.log",
+    "logs/embedding.log", 
+    "logs/rag.log",
+    "logs/tauri.log"
+]
+
+[security]
+# 보안 관련 설정
+youtube_tos_compliance = true
+personal_use_only = true
+no_cloud_upload = true
+local_storage_only = true
+
+# 민감한 정보 제외
+sensitive_patterns = [
+    "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY",
+    "api_key",
+    "secret",
+    "token",
+    "password"
+]
+
+[performance]
+# 성능 최적화 설정
+max_video_quality = "720p"
+embedding_batch_size = 100
+max_concurrent_downloads = 3
+subtitle_languages = ["ko", "ko-KR", "en"]
+
+[vault]
+# Obsidian Vault 설정
+root_path = "./vault"
+video_folder = "10_videos"
+index_folder = "90_indices"
+template_folder = "00_templates"
+
+# 파일 구조 패턴
+video_path_pattern = "{channel_name}/{year}/{date_title}"
+markdown_template = "video_template.md"
+
+[features]
+# 현재 구현된 기능
+implemented = [
+    "video_download",
+    "subtitle_extraction", 
+    "markdown_conversion",
+    "vector_embedding",
+    "rag_search",
+    "channel_isolation",
+    "desktop_app",
+    "ai_chat"
+]
+
+# 계획된 기능
+planned = [
+    "canvas_generation",
+    "topic_modeling",
+    "multi_language_support",
+    "plugin_architecture",
+    "advanced_search"
+]
+
+[troubleshooting]
+# 일반적인 문제 해결
+common_issues = [
+    "video_download_failure",
+    "embedding_generation_error",
+    "api_connection_error",
+    "tauri_build_failure",
+    "memory_usage_high"
+]
+
+# 해결 방법 참조
+solution_docs = [
+    "CLAUDE.md",
+    "GEMINI.md",
+    "README.md"
+]

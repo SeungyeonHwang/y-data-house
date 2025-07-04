@@ -4,7 +4,10 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { resolve, join } from '@tauri-apps/api/path';
 import Fuse from 'fuse.js';
+import AIQuestionTab from './components/AIQuestionTab';
+import PromptManagerTab from './components/PromptManager';
 import './App.css';
+import './components/AIComponents.css';
 
 interface VideoInfo {
   video_path: string;
@@ -62,7 +65,7 @@ interface CaptionLine {
   end_time?: number;
 }
 
-type TabType = 'dashboard' | 'channels' | 'videos' | 'ai' | 'settings';
+type TabType = 'dashboard' | 'channels' | 'videos' | 'ai' | 'prompts' | 'settings';
 
 // 절대경로로 변환하여 asset URL 생성
 async function toAssetUrl(vaultRelPath: string): Promise<string> {
@@ -251,7 +254,8 @@ export default function App() {
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [downloadLogs, setDownloadLogs] = useState<string[]>([]);
   const [showProgressModal, setShowProgressModal] = useState(false);
-  const [videoQuality, setVideoQuality] = useState<string>('720p');
+  const [videoQuality, setVideoQuality] = useState<string>('480p');
+  const [downloadMode, setDownloadMode] = useState<'fast' | 'full'>('fast'); // 다운로드 모드 상태 추가
   
   // 벡터 임베딩 상태
   const [embedLoading, setEmbedLoading] = useState(false);
@@ -819,7 +823,7 @@ export default function App() {
     }
   };
 
-  // 비디오 다운로드 (진행 상황 포함)
+  // 비디오 다운로드 (진행 상황 포함) - 빠른 확인 모드
   const downloadVideos = async () => {
     setDownloadLoading(true);
     setDownloadProgress(null);
@@ -834,6 +838,33 @@ export default function App() {
       setDownloadLogs(prev => [...prev, `❌ 다운로드 실패: ${err}`]);
     } finally {
       setDownloadLoading(false);
+    }
+  };
+
+  // 전체 무결성 검사 다운로드 (새로 추가)
+  const downloadVideosFullScan = async () => {
+    setDownloadLoading(true);
+    setDownloadProgress(null);
+    setDownloadLogs([]);
+    setShowProgressModal(true);
+    
+    try {
+      const result = await invoke<string>('download_videos_full_scan_with_progress');
+      // 완료 후 데이터 새로고침
+      await loadAppData();
+    } catch (err) {
+      setDownloadLogs(prev => [...prev, `❌ 전체 무결성 검사 실패: ${err}`]);
+    } finally {
+      setDownloadLoading(false);
+    }
+  };
+
+  // 통합 다운로드 함수 (모드에 따라 다른 함수 호출)
+  const executeDownload = async () => {
+    if (downloadMode === 'full') {
+      await downloadVideosFullScan();
+    } else {
+      await downloadVideos();
     }
   };
 
@@ -995,27 +1026,36 @@ export default function App() {
           </div>
           
           <div className="dashboard-actions">
-            <div className="quality-selector">
-              <label htmlFor="quality-select">🎬 화질 선택:</label>
+            <div className="download-options">
               <select 
-                id="quality-select"
                 value={videoQuality} 
                 onChange={(e) => setVideoQuality(e.target.value)}
-                className="quality-select"
+                className="compact-select"
               >
-                <option value="480p">480p (낮음)</option>
-                <option value="720p">720p (중간)</option>
-                <option value="1080p">1080p (높음)</option>
-                <option value="best">최고 품질</option>
+                <option value="480p">480p</option>
+                <option value="720p">720p</option>
+                <option value="1080p">1080p</option>
+                <option value="best">최고품질</option>
+              </select>
+              
+              <select 
+                value={downloadMode} 
+                onChange={(e) => setDownloadMode(e.target.value as 'fast' | 'full')}
+                className="compact-select"
+              >
+                <option value="fast">빠른 확인</option>
+                <option value="full">전체 검사</option>
               </select>
             </div>
+            
             <button 
-              onClick={downloadVideos} 
+              onClick={executeDownload} 
               disabled={downloadLoading}
               className={`action-btn primary ${downloadLoading ? 'loading' : ''}`}
             >
-              {downloadLoading ? '📥 다운로드 중...' : '📥 비디오 다운로드'}
+              {downloadLoading ? '📥 다운로드 중...' : '📥 다운로드 시작'}
             </button>
+            
             <button 
               onClick={() => setShowChannelSelector(true)} 
               disabled={embedLoading}
@@ -1023,6 +1063,7 @@ export default function App() {
             >
               {embedLoading ? '🧠 벡터 생성 중...' : '🧠 벡터 생성'}
             </button>
+            
             <button 
               onClick={checkIntegrity} 
               disabled={checkLoading}
@@ -1158,7 +1199,7 @@ export default function App() {
         <div className="modal-overlay">
           <div className="progress-modal">
             <div className="modal-header">
-              <h3>📥 비디오 다운로드 진행 상황</h3>
+              <h3>다운로드 진행 상황</h3>
               <button 
                 className="modal-close-btn"
                 onClick={() => setShowProgressModal(false)}
@@ -1175,6 +1216,9 @@ export default function App() {
                   <span>📊 상태: {downloadProgress.status}</span>
                   <span>📈 진행률: {downloadProgress.progress.toFixed(1)}%</span>
                   <span>🎬 완료: {downloadProgress.completed_videos}/{downloadProgress.total_videos}</span>
+                  <span className="mode-indicator">
+                    {downloadMode === 'full' ? '전체 검사' : '빠른 확인'}
+                  </span>
                 </div>
                 
                 <div className="progress-bar-container">
@@ -1211,7 +1255,7 @@ export default function App() {
             <div className="modal-footer">
               {downloadLoading ? (
                 <button className="btn-secondary" disabled>
-                  ⏳ 다운로드 중...
+                  📥 다운로드 중...
                 </button>
               ) : (
                 <button 
@@ -1350,7 +1394,7 @@ export default function App() {
             <div className="modal-footer">
               {embedLoading ? (
                 <button className="btn-secondary" disabled>
-                  ⏳ 임베딩 생성 중...
+                  🧠 벡터 생성 중...
                 </button>
               ) : (
                 <button 
@@ -1411,7 +1455,7 @@ export default function App() {
             <div className="modal-footer">
               {checkLoading ? (
                 <button className="btn-secondary" disabled>
-                  ⏳ 검사 중...
+                  🔍 검사 중...
                 </button>
               ) : (
                 <button 
@@ -1489,6 +1533,7 @@ export default function App() {
           { id: 'channels', icon: '📺', label: '채널 관리' },
           { id: 'videos', icon: '🎬', label: '비디오 목록' },
           { id: 'ai', icon: '🤖', label: 'AI 질문' },
+          { id: 'prompts', icon: '📝', label: '프롬프트 관리' },
           { id: 'settings', icon: '⚙️', label: '설정' }
         ].map(tab => (
           <button
@@ -1863,34 +1908,13 @@ export default function App() {
 
         {activeTab === 'ai' && (
           <div className="tab-content">
-            <h2 className="tab-title">🤖 AI 질문하기</h2>
-            
-            <div className="ai-section">
-              <h3 className="section-title">DeepSeek RAG 시스템</h3>
-              <div className="ai-input-container">
-                <textarea
-                  value={aiQuestion}
-                  onChange={(e) => setAiQuestion(e.target.value)}
-                  placeholder="비디오 내용에 대해 궁금한 것을 질문하세요. 예: '부동산 투자 시 주의할 점은?', '도쿄 원룸 투자 수익률은?'"
-                  className="ai-input"
-                  rows={4}
-                />
-                <button 
-                  onClick={askAI} 
-                  disabled={aiLoading || !aiQuestion.trim()}
-                  className={`ai-button ${aiLoading ? 'ai-button-loading' : ''}`}
-                >
-                  {aiLoading ? '🤔 생각하는 중...' : '💬 질문하기'}
-                </button>
-              </div>
-              
-              {aiAnswer && (
-                <div className="ai-answer">
-                  <h4 className="answer-title">AI 답변:</h4>
-                  <pre className="answer-text">{aiAnswer}</pre>
-                </div>
-              )}
-            </div>
+            <AIQuestionTab />
+          </div>
+        )}
+
+        {activeTab === 'prompts' && (
+          <div className="tab-content">
+            <PromptManagerTab />
           </div>
         )}
 

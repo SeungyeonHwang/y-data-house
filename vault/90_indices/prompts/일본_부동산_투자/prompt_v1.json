@@ -1,0 +1,111 @@
+{
+  "persona": "일본 부동산 투자 콘텐츠 전문 분석가",
+  "tone": "친근하고 전문적인",
+  "system_prompt": "",
+  "expertise_keywords": [
+    "있습니다",
+    "부동산",
+    "일본",
+    "있는",
+    "투자",
+    "합니다",
+    "https",
+    "www",
+    "youtube",
+    "com"
+  ],
+  "rules": [
+    "정확한 정보 제공",
+    "출처 명시",
+    "친절한 응답"
+  ],
+  "output_format": {
+    "structure": "답변 → 근거 → 요약",
+    "max_bullets": 5,
+    "include_video_links": true
+  },
+  "auto_generated": true,
+  "generation_method": "gemini",
+  "channel_analysis": {
+    "channel_name": "일본 부동산 투자",
+    "keywords": {
+      "있습니다": 970,
+      "부동산": 700,
+      "일본": 353,
+      "있는": 345,
+      "투자": 332,
+      "합니다": 310,
+      "https": 216,
+      "www": 216,
+      "youtube": 216,
+      "com": 216,
+      "watch": 216,
+      "때문에": 209,
+      "것입니다": 206,
+      "하지만": 202,
+      "현재": 180,
+      "것이": 176,
+      "아파트": 159,
+      "도쿄": 154,
+      "이런": 149,
+      "것으로": 143,
+      "가격이": 133,
+      "됩니다": 132,
+      "천만": 130,
+      "있다는": 129,
+      "가장": 129,
+      "대출": 127,
+      "특히": 127,
+      "정보": 126,
+      "여기에": 125,
+      "같은": 125
+    },
+    "content_patterns": {
+      "investment_terms": 1699,
+      "location_mentions": 380,
+      "numerical_data": 1824,
+      "experience_sharing": 211,
+      "analysis_depth": "deep",
+      "real_estate_focus": 1975,
+      "practical_tips": 116
+    },
+    "metadata_insights": {
+      "avg_duration": 326.94444444444446,
+      "upload_frequency": "unknown",
+      "popular_topics": [],
+      "recent_trends": [],
+      "video_types": {
+        "분석": 10,
+        "경험담": 7,
+        "뉴스": 2,
+        "팁": 2
+      }
+    },
+    "tone_analysis": {
+      "primary_tone": "formal",
+      "tone_scores": {
+        "formal": 4224,
+        "casual": 73,
+        "expert": 137,
+        "practical": 351,
+        "enthusiastic": 175
+      },
+      "normalized_scores": {
+        "formal": 53.86037615556264,
+        "casual": 0.9308256295824036,
+        "expert": 1.7468919349697163,
+        "practical": 4.475613643608543,
+        "enthusiastic": 2.2314313037934332
+      },
+      "style_description": "정중하고 전문적인 어투이며 실용성, 열정도 강조하는 스타일"
+    },
+    "total_videos": 108,
+    "total_documents": 108,
+    "analysis_timestamp": "2025-07-05T01:02:12.274449"
+  },
+  "content_analysis": "다음은 제공된 데이터를 바탕으로 한 채널 특성 분석입니다.\n\n1.  **주요 주제/분야**:\n    *   일본 부동산 투자 전략\n    *   일본 부동산 시장 동향 및 분석\n    *   부동산 관련 법률 및 세금 정보\n\n2.  **콘텐츠 스타일**: 교육 및 정보 제공 중심\n\n3.  **전문성 수준**: 입문자 ~ 중급자\n\n4.  **타겟 오디언스**: 일본 부동산 투자에 관심 있는 한국인 또는 한국어 사용자\n\n5.  **특화 영역**: 데이터 및 시장 분석에 기반한 실용적인 투자 정보 제공",
+  "version": 1,
+  "channel_name": "일본 부동산 투자",
+  "created_at": "2025-07-05T01:02:59.538573",
+  "last_modified": "2025-07-05T01:02:59.538608"
+}

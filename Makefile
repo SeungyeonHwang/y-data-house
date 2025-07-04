@@ -3,10 +3,92 @@ PYTHON = $(VENV_NAME)/bin/python
 PIP = $(VENV_NAME)/bin/pip
 YDH = $(PYTHON) -m ydh
 
-# Default target
+# Default target - Optimized download
 .PHONY: download
 download: $(VENV_NAME)
-	@echo "📺 채널 리스트에서 새 영상 다운로드 중..."
+	@echo "🚀 최적화된 다운로드 시작..."
+	@if [ ! -f channels.txt ]; then \
+		echo "❌ channels.txt 파일이 없습니다. 'make init'을 먼저 실행하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		echo ""; \
+		echo "다음 명령을 실행하세요:"; \
+		echo "  source venv/bin/activate"; \
+		echo "  make install"; \
+		echo ""; \
+		exit 1; \
+	fi
+	$(YDH) batch --channels-file channels.txt
+	@echo "✅ 최적화된 다운로드 완료!"
+
+# Fast parallel download
+.PHONY: download-fast
+download-fast: $(VENV_NAME)
+	@echo "🚀 병렬 다운로드 시작 (3개 워커)..."
+	@if [ ! -f channels.txt ]; then \
+		echo "❌ channels.txt 파일이 없습니다. 'make init'을 먼저 실행하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		echo ""; \
+		echo "다음 명령을 실행하세요:"; \
+		echo "  source venv/bin/activate"; \
+		echo "  make install"; \
+		echo ""; \
+		exit 1; \
+	fi
+	$(YDH) batch --channels-file channels.txt --parallel --max-workers 3
+	@echo "✅ 병렬 다운로드 완료!"
+
+# Full integrity scan download
+.PHONY: download-full-scan
+download-full-scan: $(VENV_NAME)
+	@echo "🔍 전체 무결성 검사 다운로드 시작..."
+	@echo "⏰ 이 작업은 오래 걸릴 수 있습니다 (모든 영상을 확인합니다)"
+	@if [ ! -f channels.txt ]; then \
+		echo "❌ channels.txt 파일이 없습니다. 'make init'을 먼저 실행하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		echo ""; \
+		echo "다음 명령을 실행하세요:"; \
+		echo "  source venv/bin/activate"; \
+		echo "  make install"; \
+		echo ""; \
+		exit 1; \
+	fi
+	$(YDH) batch --channels-file channels.txt --full-scan
+	@echo "✅ 전체 무결성 검사 완료!"
+
+# Combined full scan with parallel processing
+.PHONY: download-full-scan-fast
+download-full-scan-fast: $(VENV_NAME)
+	@echo "🔍🚀 병렬 전체 무결성 검사 다운로드 시작..."
+	@echo "⏰ 이 작업은 오래 걸릴 수 있습니다 (모든 영상을 병렬로 확인)"
+	@if [ ! -f channels.txt ]; then \
+		echo "❌ channels.txt 파일이 없습니다. 'make init'을 먼저 실행하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		echo ""; \
+		echo "다음 명령을 실행하세요:"; \
+		echo "  source venv/bin/activate"; \
+		echo "  make install"; \
+		echo ""; \
+		exit 1; \
+	fi
+	$(YDH) batch --channels-file channels.txt --full-scan --parallel --max-workers 3
+	@echo "✅ 병렬 전체 무결성 검사 완료!"
+
+# Legacy download (individual channel processing)
+.PHONY: download-legacy
+download-legacy: $(VENV_NAME)
+	@echo "📺 채널 리스트에서 새 영상 다운로드 중 (기존 방식)..."
 	@if [ ! -f channels.txt ]; then \
 		echo "❌ channels.txt 파일이 없습니다. 'make init'을 먼저 실행하세요."; \
 		exit 1; \
@@ -311,6 +393,321 @@ embed-clean:
 	fi
 	@echo "💡 다음 'make embed' 실행 시 모든 영상이 새로 임베딩됩니다"
 
+# ========================== Gemini 벡터 검색 시스템 ==========================
+
+# Gemini 임베딩 생성
+.PHONY: gemini-embed
+gemini-embed: $(VENV_NAME)
+	@echo "🤖 Gemini 벡터 임베딩 생성 중..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		echo ""; \
+		echo "다음 명령을 실행하세요:"; \
+		echo "  source venv/bin/activate"; \
+		echo "  make install"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@if [ -z "$$GEMINI_API_KEY" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		echo "다음 방법 중 하나를 사용하여 API 키를 설정하세요:"; \
+		echo "  1. export GEMINI_API_KEY='your_api_key_here'"; \
+		echo "  2. .env 파일에 GEMINI_API_KEY=your_api_key_here 추가"; \
+		exit 1; \
+	fi
+	$(YDH) gemini-embed
+	@echo "✅ Gemini 벡터 임베딩 완료!"
+
+# 특정 채널만 Gemini 임베딩
+.PHONY: gemini-embed-channels
+gemini-embed-channels: $(VENV_NAME)
+	@echo "🤖 특정 채널 Gemini 임베딩 생성 중..."
+	@if [ -z "$(CHANNELS)" ]; then \
+		echo "사용법: make gemini-embed-channels CHANNELS=\"채널1,채널2\""; \
+		echo "예시: make gemini-embed-channels CHANNELS=\"도쿄부동산,takaki_takehana\""; \
+		exit 1; \
+	fi
+	@if [ -z "$$GEMINI_API_KEY" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) gemini-embed --channels "$(CHANNELS)"
+	@echo "✅ 선택된 채널 Gemini 임베딩 완료!"
+
+# Gemini 벡터 검색
+.PHONY: search-gemini
+search-gemini: $(VENV_NAME)
+	@echo "🔍 Gemini 벡터 검색..."
+	@if [ -z "$(QUERY)" ]; then \
+		echo "사용법: make search-gemini QUERY=\"검색어\""; \
+		echo "예시:"; \
+		echo "  make search-gemini QUERY=\"도쿄 부동산 투자 전략\""; \
+		echo "  make search-gemini QUERY=\"원룸 수익률\" CHANNEL=\"도쿄부동산\""; \
+		echo "  make search-gemini QUERY=\"투자 전략\" YEAR=\"2023\""; \
+		exit 1; \
+	fi
+	@if [ -z "$$GEMINI_API_KEY" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		exit 1; \
+	fi
+	@cmd="$(YDH) search-gemini \"$(QUERY)\""; \
+	if [ -n "$(CHANNEL)" ]; then \
+		cmd="$$cmd --channel \"$(CHANNEL)\""; \
+	fi; \
+	if [ -n "$(YEAR)" ]; then \
+		cmd="$$cmd --year \"$(YEAR)\""; \
+	fi; \
+	if [ -n "$(NUM)" ]; then \
+		cmd="$$cmd --num-results $(NUM)"; \
+	fi; \
+	if [ -n "$(MIN_SIM)" ]; then \
+		cmd="$$cmd --min-similarity $(MIN_SIM)"; \
+	fi; \
+	eval $$cmd
+
+# Gemini 채널 목록 조회
+.PHONY: gemini-channels
+gemini-channels: $(VENV_NAME)
+	@echo "📺 Gemini 검색 가능한 채널 조회..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) gemini-channels
+
+# Gemini 데이터베이스 통계
+.PHONY: gemini-stats
+gemini-stats: $(VENV_NAME)
+	@echo "📊 Gemini 데이터베이스 통계 조회..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) gemini-stats
+
+# Gemini 임베딩 데이터베이스 정리
+.PHONY: gemini-clean
+gemini-clean:
+	@echo "🧹 Gemini 임베딩 데이터베이스 초기화 중..."
+	@if [ -d "vault/90_indices/chroma_gemini" ]; then \
+		rm -rf vault/90_indices/chroma_gemini; \
+		echo "✅ Gemini 임베딩 데이터베이스가 삭제되었습니다"; \
+	else \
+		echo "ℹ️  삭제할 Gemini 임베딩 데이터베이스가 없습니다"; \
+	fi
+	@echo "💡 다음 'make gemini-embed' 실행 시 모든 영상이 새로 임베딩됩니다"
+
+# Gemini 시스템 전체 재구축
+.PHONY: gemini-rebuild
+gemini-rebuild: gemini-clean gemini-embed
+	@echo "🎉 Gemini 벡터 검색 시스템 재구축 완료!"
+
+# 세션 관리 명령어
+.PHONY: list-sessions
+list-sessions: $(VENV_NAME)  ## 📚 저장된 검색 세션 목록 표시
+	@echo "📚 저장된 검색 세션 목록 조회..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) list-sessions
+
+.PHONY: list-sessions-channel
+list-sessions-channel: $(VENV_NAME)  ## 📚 특정 채널의 세션만 표시
+	@echo "📚 특정 채널의 세션 목록 조회..."
+	@if [ -z "$(CHANNEL)" ]; then \
+		echo "❌ 채널명이 필요합니다. CHANNEL=\"채널명\"을 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) list-sessions --channel "$(CHANNEL)"
+
+.PHONY: delete-session
+delete-session: $(VENV_NAME)  ## 🗑️ 특정 세션 삭제
+	@echo "🗑️ 세션 삭제 중..."
+	@if [ -z "$(SESSION_ID)" ]; then \
+		echo "❌ 세션 ID가 필요합니다. SESSION_ID=\"세션ID\"를 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) delete-session "$(SESSION_ID)"
+
+.PHONY: delete-session-force
+delete-session-force: $(VENV_NAME)  ## 🗑️ 확인 없이 세션 삭제
+	@echo "🗑️ 세션 강제 삭제 중..."
+	@if [ -z "$(SESSION_ID)" ]; then \
+		echo "❌ 세션 ID가 필요합니다. SESSION_ID=\"세션ID\"를 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) delete-session "$(SESSION_ID)" --confirm
+
+.PHONY: export-session
+export-session: $(VENV_NAME)  ## 📄 세션을 HTML로 내보내기
+	@echo "📄 세션 내보내기 중..."
+	@if [ -z "$(SESSION_ID)" ]; then \
+		echo "❌ 세션 ID가 필요합니다. SESSION_ID=\"세션ID\"를 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) export-session "$(SESSION_ID)"
+
+.PHONY: export-session-json
+export-session-json: $(VENV_NAME)  ## 📄 세션을 JSON으로 내보내기
+	@echo "📄 세션 JSON 내보내기 중..."
+	@if [ -z "$(SESSION_ID)" ]; then \
+		echo "❌ 세션 ID가 필요합니다. SESSION_ID=\"세션ID\"를 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) export-session "$(SESSION_ID)" --format json
+
+.PHONY: clean-sessions
+clean-sessions: $(VENV_NAME)  ## 🧹 30일 이상 된 세션 정리
+	@echo "🧹 30일 이상 된 세션 정리 중..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) clean-sessions --days 30
+
+.PHONY: clean-sessions-week
+clean-sessions-week: $(VENV_NAME)  ## 🧹 7일 이상 된 세션 정리
+	@echo "🧹 7일 이상 된 세션 정리 중..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) clean-sessions --days 7
+
+.PHONY: clean-sessions-force
+clean-sessions-force: $(VENV_NAME)  ## 🧹 확인 없이 30일 이상 된 세션 정리
+	@echo "🧹 30일 이상 된 세션 강제 정리 중..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) clean-sessions --days 30 --confirm
+
+# Gemini RAG 질의응답 명령어
+.PHONY: ask-gemini
+ask-gemini: $(VENV_NAME)  ## 🤖 Gemini RAG 질의응답
+	@echo "🤖 Gemini RAG 질의응답..."
+	@if [ -z "$(QUERY)" ]; then \
+		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
+		echo "예시: make ask-gemini QUERY=\"머신러닝이 뭔가요?\""; \
+		exit 1; \
+	fi
+	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) ask-gemini "$(QUERY)"
+
+.PHONY: ask-gemini-channel
+ask-gemini-channel: $(VENV_NAME)  ## 🤖 특정 채널 RAG 질의응답
+	@echo "🤖 특정 채널 Gemini RAG 질의응답..."
+	@if [ -z "$(QUERY)" ]; then \
+		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
+		exit 1; \
+	fi
+	@if [ -z "$(CHANNEL)" ]; then \
+		echo "❌ 채널명이 필요합니다. CHANNEL=\"채널명\"을 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) ask-gemini "$(QUERY)" --channel "$(CHANNEL)"
+
+.PHONY: ask-gemini-stream
+ask-gemini-stream: $(VENV_NAME)  ## 🤖 스트리밍 RAG 답변
+	@echo "🤖 스트리밍 Gemini RAG 질의응답..."
+	@if [ -z "$(QUERY)" ]; then \
+		echo "❌ 질문이 필요합니다. QUERY=\"질문 내용\"을 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	@cmd="$(YDH) ask-gemini \"$(QUERY)\" --stream"; \
+	if [ -n "$(CHANNEL)" ]; then \
+		cmd="$$cmd --channel \"$(CHANNEL)\""; \
+	fi; \
+	eval $$cmd
+
+.PHONY: generate-prompts
+generate-prompts: $(VENV_NAME)  ## 🎯 Gemini로 채널별 프롬프트 자동 생성
+	@echo "🎯 Gemini로 채널별 프롬프트 자동 생성..."
+	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) generate-prompts --method gemini
+
+.PHONY: generate-prompts-channel
+generate-prompts-channel: $(VENV_NAME)  ## 🎯 특정 채널 프롬프트 생성
+	@echo "🎯 특정 채널 프롬프트 생성..."
+	@if [ -z "$(CHANNEL)" ]; then \
+		echo "❌ 채널명이 필요합니다. CHANNEL=\"채널명\"을 지정하세요."; \
+		exit 1; \
+	fi
+	@if ! command -v printenv >/dev/null || [ -z "$$(printenv GEMINI_API_KEY)" ]; then \
+		echo "❌ GEMINI_API_KEY 환경변수가 설정되지 않았습니다."; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	$(YDH) generate-prompts --channels "$(CHANNEL)" --method gemini
+
+.PHONY: list-prompts
+list-prompts: $(VENV_NAME)  ## 📝 저장된 채널 프롬프트 목록 조회
+	@echo "📝 저장된 채널 프롬프트 목록 조회..."
+	@if ! $(PYTHON) -c "import ydh" 2>/dev/null; then \
+		echo "❌ Y-Data-House 모듈이 설치되지 않았습니다."; \
+		exit 1; \
+	fi
+	@cmd="$(YDH) list-prompts"; \
+	if [ -n "$(CHANNEL)" ]; then \
+		cmd="$$cmd --channel \"$(CHANNEL)\""; \
+	fi; \
+	eval $$cmd
+
 # Clean up
 .PHONY: clean
 clean:
@@ -325,15 +722,44 @@ help:
 	@echo "=========================="
 	@echo ""
 	@echo "🚀 CLI 도구 명령어:"
-	@echo "  make init       - 기본 환경 설정 (가상환경 생성, 초기 파일 생성)"
-	@echo "  make install    - 의존성 설치 (가상환경 활성화 후 실행)"
-	@echo "  make download   - channels.txt의 모든 채널에서 새 영상 다운로드"
-	@echo "  make check      - Vault 데이터 정합성 검사"
-	@echo "  make embed      - 벡터 임베딩 생성 (AI 검색 기반 구축)"
-	@echo "  make search     - 벡터 검색 테스트 (QUERY=\"검색어\" 필요)"
-	@echo "  make ask        - DeepSeek RAG 질문-답변 (QUERY=\"질문\" 필요)"
-	@echo "  make embed-clean - 벡터 임베딩 데이터베이스 초기화"
-	@echo "  make clean      - 가상환경 삭제"
+	@echo "  make init                 - 기본 환경 설정 (가상환경 생성, 초기 파일 생성)"
+	@echo "  make install              - 의존성 설치 (가상환경 활성화 후 실행)"
+	@echo "  make download             - 🚀 최적화된 다운로드 (신규 영상 빠른 확인)"
+	@echo "  make download-fast        - ⚡ 병렬 다운로드 (3개 워커, 더 빠름)"
+	@echo "  make download-full-scan   - 🔍 전체 무결성 검사 (누락 영상 복구)"
+	@echo "  make download-full-scan-fast - 🔍🚀 병렬 전체 무결성 검사"
+	@echo "  make download-legacy      - 📺 기존 방식 다운로드 (개별 채널 처리)"
+	@echo "  make check                - Vault 데이터 정합성 검사"
+	@echo "  make embed                - 벡터 임베딩 생성 (AI 검색 기반 구축)"
+	@echo "  make search               - 벡터 검색 테스트 (QUERY=\"검색어\" 필요)"
+	@echo "  make ask                  - DeepSeek RAG 질문-답변 (QUERY=\"질문\" 필요)"
+	@echo "  make embed-clean          - 벡터 임베딩 데이터베이스 초기화"
+	@echo "  make clean                - 가상환경 삭제"
+	@echo ""
+	@echo "🤖 Gemini 벡터 검색 시스템:"
+	@echo "  make gemini-embed           - Gemini 벡터 임베딩 생성"
+	@echo "  make gemini-embed-channels  - 특정 채널만 임베딩 (CHANNELS=\"채널1,채널2\")"
+	@echo "  make search-gemini          - Gemini 벡터 검색 (QUERY=\"검색어\")"
+	@echo "  make gemini-channels        - 검색 가능한 채널 목록"
+	@echo "  make gemini-stats           - Gemini 데이터베이스 통계"
+	@echo "  make gemini-clean           - Gemini 임베딩 데이터베이스 삭제"
+	@echo "  make gemini-rebuild         - Gemini 시스템 전체 재구축"
+	@echo ""
+	@echo "📚 검색 세션 관리:"
+	@echo "  make list-sessions          - 저장된 검색 세션 목록 표시"
+	@echo "  make list-sessions-channel  - 특정 채널의 세션만 표시 (CHANNEL=\"채널명\")"
+	@echo "  make delete-session         - 특정 세션 삭제 (SESSION_ID=\"세션ID\")"
+	@echo "  make export-session         - 세션을 HTML로 내보내기 (SESSION_ID=\"세션ID\")"
+	@echo "  make clean-sessions         - 30일 이상 된 세션 정리"
+	@echo "  make clean-sessions-week    - 7일 이상 된 세션 정리"
+	@echo ""
+	@echo "🤖 Gemini RAG 질의응답:"
+	@echo "  make ask-gemini            - Gemini RAG 질의응답 (QUERY=\"질문\")"
+	@echo "  make ask-gemini-channel    - 특정 채널 RAG 질의응답 (QUERY=\"질문\" CHANNEL=\"채널명\")"
+	@echo "  make ask-gemini-stream     - 스트리밍 RAG 답변 (QUERY=\"질문\")"
+	@echo "  make generate-prompts      - Gemini로 채널별 프롬프트 자동 생성"
+	@echo "  make generate-prompts-channel - 특정 채널 프롬프트 생성 (CHANNEL=\"채널명\")"
+	@echo "  make list-prompts          - 저장된 채널 프롬프트 목록 조회"
 	@echo ""
 	@echo "📱 데스크톱 앱 명령어:"
 	@echo "  make desktop-init  - 데스크톱 앱 개발환경 설정 (Rust, Node.js, pnpm)"
@@ -346,10 +772,22 @@ help:
 	@echo "  2. source venv/bin/activate        # 가상환경 활성화"
 	@echo "  3. make install                    # 의존성 설치"
 	@echo "  4. channels.txt 편집                # 다운로드할 채널 URL 추가"
-	@echo "  5. make download                   # 영상 다운로드"
-	@echo "  6. make check                      # 데이터 정합성 검사"
-	@echo "  7. make embed                      # 벡터 임베딩 생성"
-	@echo "  8. make ask QUERY=\"투자 전략은?\"    # AI 질문-답변 시스템"
+	@echo "  5. make download                   # 영상 다운로드 (빠른 확인)"
+	@echo "  6. make download-full-scan         # 전체 무결성 검사 (누락 영상 복구)"
+	@echo "  7. make check                      # 데이터 정합성 검사"
+	@echo "  8. make embed                      # 벡터 임베딩 생성"
+	@echo "  9. make ask QUERY=\"투자 전략은?\"    # AI 질문-답변 시스템"
+	@echo ""
+	@echo "🤖 Gemini 검색 사용법:"
+	@echo "  1. export GEMINI_API_KEY=\"키\"       # Gemini API 키 설정"
+	@echo "  2. make gemini-embed               # Gemini 임베딩 생성"
+	@echo "  3. make search-gemini QUERY=\"검색어\" # Gemini 벡터 검색"
+	@echo "  4. make gemini-stats               # 검색 데이터베이스 통계"
+	@echo ""
+	@echo "🔍 Gemini 검색 고급 옵션:"
+	@echo "  make search-gemini QUERY=\"검색어\" CHANNEL=\"채널명\"  # 특정 채널에서만"
+	@echo "  make search-gemini QUERY=\"검색어\" YEAR=\"2023\"     # 특정 연도만"
+	@echo "  make search-gemini QUERY=\"검색어\" NUM=5            # 결과 개수 제한"
 	@echo ""
 	@echo "📱 데스크톱 앱 사용법:"
 	@echo "  1. make desktop-init               # 데스크톱 앱 개발환경 설정"

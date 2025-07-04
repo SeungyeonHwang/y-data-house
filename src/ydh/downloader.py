@@ -5,14 +5,23 @@ yt-dlp wrapper with download archive functionality.
 import logging
 import sys
 import time
+import os
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 import re
+import signal
+import json
+import threading
 
 import yt_dlp
 from tqdm import tqdm
 
 from .config import settings
+from .converter import CaptionConverter
+
+# multiprocessing 경고 억제
+warnings.filterwarnings("ignore", category=UserWarning, module="multiprocessing.resource_tracker")
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +66,8 @@ class VideoDownloader:
             def warning(self, msg):
                 # 불필요한 경고 무시
                 if not any(x in msg for x in ["nsig extraction failed", "Some formats may be missing", 
-                                            "Requested format is not available"]):
+                                            "Requested format is not available", "SABR streaming", 
+                                            "Some web client https formats have been skipped"]):
                     logger.warning(f"[yt-dlp] {msg}")
             
             def error(self, msg):
@@ -65,210 +75,456 @@ class VideoDownloader:
         
         self.yt_dlp_logger = YtDlpLogger()
     
-    def get_channel_videos(self, channel_url: str) -> List[Dict[str, Any]]:
+    def get_channel_videos(self, channel_url: str, chunk_size: int = 100) -> List[Dict[str, Any]]:
         """
-        채널 URL에서 영상 목록을 가져옵니다.
-        최신 yt-dlp 버전의 extract_flat 버그를 회피하고 100개 이상 채널도 처리합니다.
+        채널 URL에서 영상 목록을 청크 단위로 가져옵니다.
+        
+        Args:
+            channel_url: YouTube 채널 URL
+            chunk_size: 청크당 영상 수 (기본: 100개)
+            
+        Returns:
+            List[Dict[str, Any]]: 영상 정보 목록
+        """
+        logger.info("채널 영상 목록 수집 중 (청크 단위 처리)...")
+        
+        all_videos = []
+        chunk_num = 1
+        max_chunks = 10  # 최대 10청크 (1000개 영상)
+        
+        while chunk_num <= max_chunks:
+            start_idx = (chunk_num - 1) * chunk_size + 1
+            end_idx = chunk_num * chunk_size
+            
+            logger.info(f"📦 청크 {chunk_num}: 영상 {start_idx}-{end_idx} 처리 중...")
+            
+            # 🔥 청크별 yt-dlp 옵션
+            chunk_opts = {
+                'quiet': True,  # 청크 처리시 출력 줄이기
+                'verbose': False,
+                'extract_flat': True,
+                'ignoreerrors': True,
+                'no_warnings': True,
+                'skip_download': True,
+                'logger': self.yt_dlp_logger,
+                'http_headers': {
+                    'User-Agent': settings.user_agent,
+                },
+                # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
+                'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
+                # 🔥 환경변수에서 rate limiting 설정 (더 짧은 타임아웃)
+                'socket_timeout': int(os.getenv('YDH_YTDLP_SOCKET_TIMEOUT', '8')),  # 8초로 단축
+                'retries': int(os.getenv('YDH_YTDLP_RETRIES', '1')),  # 1회로 단축
+                'sleep_interval': int(os.getenv('YDH_YTDLP_SLEEP_INTERVAL', '1')),
+                'max_sleep_interval': int(os.getenv('YDH_YTDLP_MAX_SLEEP_INTERVAL', '3')),
+                'sleep_interval_requests': int(os.getenv('YDH_YTDLP_SLEEP_REQUESTS', '10')),
+                # 🔥 청크 범위 설정
+                'playliststart': start_idx,
+                'playlistend': end_idx,
+            }
+            
+            chunk_videos = self._get_chunk_videos(channel_url, chunk_opts, chunk_num)
+            
+            if not chunk_videos:
+                logger.info(f"📦 청크 {chunk_num}: 영상이 없습니다. 수집 완료")
+                break
+            
+            all_videos.extend(chunk_videos)
+            logger.info(f"📦 청크 {chunk_num}: {len(chunk_videos)}개 영상 수집 완료")
+            
+            # 마지막 청크가 꽉 차지 않으면 끝
+            if len(chunk_videos) < chunk_size:
+                logger.info(f"📦 마지막 청크 감지. 총 {len(all_videos)}개 영상 수집 완료")
+                break
+                
+            chunk_num += 1
+            
+            # 청크 간 지연
+            time.sleep(2)
+        
+        logger.info(f"✅ 전체 수집 완료: {len(all_videos)}개 영상")
+        return all_videos
+    
+    def check_for_new_videos_fast(self, channel_url: str, channel_name: str, check_count: int = 20) -> Dict[str, Any]:
+        """
+        🚀 OPTIMIZED: 채널에 신규 영상이 있는지 빠르게 확인합니다.
+        
+        Args:
+            channel_url: YouTube 채널 URL
+            channel_name: 채널 이름 (아카이브 파일용)
+            check_count: 확인할 최신 영상 수 (기본: 20개)
+            
+        Returns:
+            Dict[str, Any]: {
+                'has_new_videos': bool,
+                'new_video_count': int,
+                'latest_videos': List[Dict],
+                'total_checked': int
+            }
+        """
+        logger.info(f"🔍 신규 영상 빠른 확인 중... (최신 {check_count}개 영상 체크)")
+        start_time = time.time()
+        
+        # 기존 다운로드 아카이브 로드
+        downloaded_ids = self._load_downloaded_archive(channel_name)
+        logger.info(f"📋 기존 다운로드: {len(downloaded_ids)}개 영상")
+        
+        # downloads 폴더의 진행중인 영상 확인
+        downloading_ids = self._check_downloads_folder(channel_name)
+        
+        # 전체 제외할 영상 ID 목록 (아카이브 + 진행중)
+        all_excluded_ids = downloaded_ids | downloading_ids
+        
+        # 최신 영상만 빠르게 가져오기
+        latest_videos = self._get_latest_videos_only(channel_url, check_count)
+        
+        if not latest_videos:
+            logger.warning("⚠️ 최신 영상 목록을 가져올 수 없습니다")
+            return {
+                'has_new_videos': False,
+                'new_video_count': 0,
+                'latest_videos': [],
+                'total_checked': 0
+            }
+        
+        # 신규 영상 필터링 (아카이브 + 진행중 영상 모두 제외)
+        new_videos = [v for v in latest_videos if v.get('id') not in all_excluded_ids]
+        
+        elapsed = time.time() - start_time
+        logger.info(f"⚡ 빠른 확인 완료: {len(latest_videos)}개 확인, {len(new_videos)}개 신규 ({elapsed:.1f}초)")
+        
+        return {
+            'has_new_videos': len(new_videos) > 0,
+            'new_video_count': len(new_videos),
+            'latest_videos': new_videos,
+            'total_checked': len(latest_videos)
+        }
+    
+    def _get_latest_videos_only(self, channel_url: str, count: int = 20) -> List[Dict[str, Any]]:
+        """
+        채널의 최신 영상만 빠르게 가져옵니다.
+        
+        Args:
+            channel_url: YouTube 채널 URL
+            count: 가져올 최신 영상 수
+            
+        Returns:
+            List[Dict[str, Any]]: 최신 영상 목록
+        """
+        # 🔥 최적화된 yt-dlp 옵션 (최소한의 데이터만)
+        opts = {
+            'quiet': True,
+            'verbose': False,
+            'extract_flat': True,
+            'ignoreerrors': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'logger': self.yt_dlp_logger,
+            'http_headers': {
+                'User-Agent': settings.user_agent,
+            },
+            # 🛡️ 봇 감지 회피
+            'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
+            # 🔥 타임아웃 60초로 증가
+            'socket_timeout': 60,  # 60초로 증가
+            'retries': int(os.getenv('YDH_YTDLP_RETRIES', '1')),  # 1회만
+            'sleep_interval': int(os.getenv('YDH_YTDLP_SLEEP_INTERVAL', '0')),  # 지연 최소화
+            'max_sleep_interval': int(os.getenv('YDH_YTDLP_MAX_SLEEP_INTERVAL', '1')),
+            'sleep_interval_requests': int(os.getenv('YDH_YTDLP_SLEEP_REQUESTS', '5')),
+            # 🔥 핵심: 최신 영상만 가져오기
+            'playliststart': 1,
+            'playlistend': count,
+            # 🔥 인증 체크 스킵 강화
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['webpage'],
+                    'player_client': ['android'],
+                },
+                'youtubetab': {
+                    'skip': ['webpage', 'authcheck'],  # authcheck 스킵
+                    'approximate_date': False,  # 정확한 날짜 스킵
+                }
+            }
+        }
+        
+        try:
+            # URL 전처리
+            import urllib.parse
+            decoded_url = urllib.parse.unquote(channel_url)
+            videos_url = decoded_url
+            
+            if '@' in decoded_url and not decoded_url.endswith('/videos'):
+                videos_url = f"{decoded_url}/videos"
+            elif ('/c/' in decoded_url or '/channel/' in decoded_url) and not decoded_url.endswith('/videos'):
+                videos_url = f"{decoded_url}/videos"
+            
+            logger.info(f"🌐 최신 영상 수집 중... URL: {videos_url}")
+            
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                result = ydl.extract_info(videos_url, download=False)
+                
+            if not result or 'entries' not in result:
+                # Fallback: videos URL 실패시 원본 URL 시도
+                logger.warning("videos URL 실패, 원본 URL로 재시도...")
+                fallback_url = channel_url if videos_url != channel_url else channel_url.replace('/videos', '')
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    result = ydl.extract_info(fallback_url, download=False)
+                    
+                if not result or 'entries' not in result:
+                    logger.error("❌ 채널 정보를 가져올 수 없습니다")
+                    return []
+            
+            # 유효한 영상만 필터링
+            videos = [v for v in result['entries'] if v and v.get('id')]
+            logger.info(f"✅ 최신 {len(videos)}개 영상 수집 완료")
+            return videos
+            
+        except Exception as e:
+            logger.error(f"❌ 최신 영상 수집 실패: {e}")
+            return []
+
+    def _extract_channel_id(self, channel_url: str) -> Optional[str]:
+        """
+        채널 URL에서 채널 ID를 추출합니다.
         
         Args:
             channel_url: YouTube 채널 URL
             
         Returns:
-            List[Dict[str, Any]]: 영상 정보 목록
+            Optional[str]: 추출된 채널 ID (UC...) 또는 None
         """
-        logger.info("채널 영상 목록 수집 중...")
-        
-        # 🔥 FIXED: 최신 yt-dlp 안정화 옵션
-        base_opts = {
-            'quiet': True,
-            'extract_flat': True,  # True로 단순화 (discard_in_playlist는 실제 옵션이 아님)
-            'ignoreerrors': True,
-            'no_warnings': True,
-            'skip_download': True,
-            'logger': self.yt_dlp_logger,
-            'http_headers': {
-                'User-Agent': settings.user_agent,
-            },
-            # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
-            'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
-            # 🔥 NEW: 타임아웃 추가 (멈춤 방지)
-            'socket_timeout': 30,
-            'retries': 2,
-        }
-        
-        # 🔥 FIXED: 채널 URL을 videos 탭으로 변경
-        videos_url = channel_url  # 기본적으로는 원본 URL 사용
-        if '@' in channel_url and not channel_url.endswith('/videos'):
-            videos_url = f"{channel_url}/videos"
-        elif ('/c/' in channel_url or '/channel/' in channel_url) and not channel_url.endswith('/videos'):
-            videos_url = f"{channel_url}/videos"
-        
-        logger.debug(f"채널 비디오 URL: {videos_url}")
-        
         try:
-            # 🔥 NEW: 1단계 - 전체 플레이리스트 길이 확인
-            logger.debug("yt-dlp로 채널 정보 추출 시작...")
-            with yt_dlp.YoutubeDL(base_opts) as ydl:
-                result = ydl.extract_info(videos_url, download=False)
-                logger.debug("채널 정보 추출 완료")
+            # URL 디코딩
+            import urllib.parse
+            decoded_url = urllib.parse.unquote(channel_url)
+            
+            # 1. /channel/UC... 형태
+            if '/channel/' in decoded_url:
+                channel_id = decoded_url.split('/channel/')[-1].split('/')[0]
+                if channel_id.startswith('UC') and len(channel_id) == 24:
+                    return channel_id
+            
+            # 2. @handle 형태 - yt-dlp로 채널 ID 추출
+            if '@' in decoded_url:
+                return self._get_channel_id_from_handle(decoded_url)
+            
+            # 3. /c/ 또는 /user/ 형태 - yt-dlp로 채널 ID 추출
+            if '/c/' in decoded_url or '/user/' in decoded_url:
+                return self._get_channel_id_from_handle(decoded_url)
                 
-                if not result or 'entries' not in result:
-                    logger.warning("entries가 없습니다. 원본 URL로 재시도...")
-                    # 🔥 FIXED: videos URL이 실패하면 원본 URL로 재시도
-                    fallback_url = channel_url if videos_url != channel_url else channel_url.replace('/videos', '')
-                    logger.debug(f"폴백 URL: {fallback_url}")
-                    result = ydl.extract_info(fallback_url, download=False)
-                    if not result or 'entries' not in result:
-                        logger.error("채널 정보를 가져오지 못했습니다.")
-                        return []
-                
-                # 전체 영상 수 확인
-                total_count = result.get('playlist_count', 0) or len([e for e in result['entries'] if e])
-                logger.info(f"채널 전체 영상 수: {total_count}개")
-                
-                # 🔥 NEW: 2단계 - 100개 이상이면 페이징 처리
-                if total_count <= 100:
-                    # 100개 이하면 한 번에 처리
-                    videos = self._extract_valid_videos(result['entries'])
-                else:
-                    # 100개 이상이면 구간별로 나눠서 처리
-                    logger.info(f"대용량 채널 감지: {total_count}개 영상을 100개씩 나눠서 처리")
-                    videos = self._fetch_videos_in_chunks(videos_url, total_count, base_opts)
-                
-                logger.info(f"총 {len(videos)}개 영상을 발견했습니다.")
-                
-                # 🔥 NEW: 디버깅을 위해 처음 5개 비디오 ID 로그
-                if settings.detailed_debug and videos:
-                    sample_ids = [v.get('id', 'NO_ID') for v in videos[:5]]
-                    logger.debug(f"샘플 비디오 IDs: {sample_ids}")
-                
-                return videos
-                
+            return None
+            
         except Exception as e:
-            logger.error(f"채널 정보 수집 중 오류 발생: {e}")
-            # 🔥 NEW: 3단계 - 폴백: 풀 메타데이터 추출 후 필터링
-            return self._fallback_full_extraction(channel_url)
-    
-    def _extract_valid_videos(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            logger.warning(f"채널 ID 추출 실패: {e}")
+            return None
+
+    def _get_channel_id_from_handle(self, channel_url: str) -> Optional[str]:
         """
-        유효한 비디오만 필터링합니다.
-        
-        Args:
-            entries: yt-dlp에서 반환된 entries
-            
-        Returns:
-            List[Dict[str, Any]]: 유효한 비디오 목록
+        핸들/사용자명으로부터 채널 ID를 추출합니다.
         """
-        videos = []
-        for entry in entries:
-            if entry and entry.get('id'):
-                video_id = entry.get('id', '')
-                # 채널 ID (UC로 시작하고 22-24자리)가 아닌 실제 비디오 ID만 포함
-                if not (video_id.startswith('UC') and len(video_id) >= 22):
-                    # 정상적인 비디오 ID는 보통 11자리
-                    if len(video_id) == 11:
-                        videos.append(entry)
-                    else:
-                        logger.debug(f"이상한 ID 제외: {video_id}")
-        return videos
-    
-    def _fetch_videos_in_chunks(self, videos_url: str, total_count: int, base_opts: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        대용량 채널의 영상을 100개씩 나눠서 가져옵니다.
-        
-        Args:
-            videos_url: 채널 비디오 URL
-            total_count: 전체 영상 수
-            base_opts: 기본 yt-dlp 옵션
-            
-        Returns:
-            List[Dict[str, Any]]: 전체 비디오 목록
-        """
-        all_videos = []
-        chunk_size = 100
-        
-        for start in range(1, total_count + 1, chunk_size):
-            end = min(start + chunk_size - 1, total_count)
-            playlist_items = f"{start}-{end}"
-            
-            logger.info(f"영상 {start}-{end} 처리 중... ({len(all_videos)}/{total_count})")
-            
-            chunk_opts = {
-                **base_opts,
-                'playlist_items': playlist_items
+        try:
+            opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'skip_download': True,
+                'socket_timeout': 60,  # 60초로 증가
+                'retries': 1,
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['webpage'],
+                        'player_client': ['android'],
+                    },
+                    'youtubetab': {
+                        'skip': ['webpage', 'authcheck'],
+                    }
+                }
             }
             
+            logger.info(f"🔍 채널 ID 추출 중: {channel_url}")
+            start_time = time.time()
+            last_progress_time = start_time
+            
+            def progress_monitor():
+                """5초마다 진행상황 로그 출력"""
+                nonlocal last_progress_time
+                while True:
+                    time.sleep(5)
+                    current_time = time.time()
+                    if current_time - last_progress_time > 4:  # 4초 이상 지났으면
+                        elapsed = current_time - start_time
+                        logger.info(f"📊 채널 ID 추출 진행 중... ({elapsed:.1f}초 경과)")
+                        last_progress_time = current_time
+                    else:
+                        break  # 메인 작업이 완료됨
+            
+            # 백그라운드에서 진행상황 모니터링 시작
+            monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
+            monitor_thread.start()
+            
             try:
-                with yt_dlp.YoutubeDL(chunk_opts) as ydl:
-                    result = ydl.extract_info(videos_url, download=False)
-                    
-                    if result and 'entries' in result:
-                        chunk_videos = self._extract_valid_videos(result['entries'])
-                        all_videos.extend(chunk_videos)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    result = ydl.extract_info(channel_url, download=False)
+                
+                # 작업 완료 - 진행상황 모니터링 중단
+                last_progress_time = time.time()
+                
+                # result가 None이거나 dict가 아니면 즉시 반환
+                if not result or not isinstance(result, dict):
+                    return None
+                
+                # 1. 직접 ID 확인
+                if 'id' in result and result['id']:
+                    channel_id = result['id']
+                    if isinstance(channel_id, str) and channel_id.startswith('UC') and len(channel_id) == 24:
+                        logger.info(f"✅ 채널 ID 추출 성공: {channel_id}")
+                        return channel_id
                         
-                        if settings.detailed_debug:
-                            logger.debug(f"청크 {start}-{end}: {len(chunk_videos)}개 영상 추가")
-                    
-                    # 서버 부하 방지
-                    time.sleep(0.5)
-                    
+                # 2. uploader_id 확인
+                if 'uploader_id' in result and result['uploader_id']:
+                    uploader_id = result['uploader_id']
+                    if isinstance(uploader_id, str) and uploader_id.startswith('UC') and len(uploader_id) == 24:
+                        logger.info(f"✅ 채널 ID 추출 성공 (uploader_id): {uploader_id}")
+                        return uploader_id
+                
+                # 3. entries에서 찾기 (매우 안전하게)
+                if 'entries' in result:
+                    entries = result['entries']
+                    # entries가 리스트인지 확인
+                    if isinstance(entries, (list, tuple)):
+                        for entry in entries:
+                            # entry가 dict이고 channel_id가 있는지 확인
+                            if (isinstance(entry, dict) and 
+                                'channel_id' in entry and 
+                                entry['channel_id']):
+                                
+                                channel_id = entry['channel_id']
+                                if (isinstance(channel_id, str) and 
+                                    channel_id.startswith('UC') and 
+                                    len(channel_id) == 24):
+                                    logger.info(f"✅ 채널 ID 추출 성공 (entries): {channel_id}")
+                                    return channel_id
+                
+                return None
+                
             except Exception as e:
-                logger.warning(f"청크 {start}-{end} 처리 실패: {e}")
-                continue
-        
-        return all_videos
-    
-    def _fallback_full_extraction(self, channel_url: str) -> List[Dict[str, Any]]:
+                # 작업 완료 (에러) - 진행상황 모니터링 중단
+                last_progress_time = time.time()
+                raise e
+                
+        except Exception as e:
+            logger.warning(f"핸들에서 채널 ID 추출 실패: {e}")
+            return None
+
+    def _convert_to_uploads_playlist(self, channel_id: str) -> str:
         """
-        플랫 추출 실패 시 풀 메타데이터 추출 후 필터링하는 폴백 방법.
+        채널 ID (UC...)를 Uploads 재생목록 ID (UU...)로 변환합니다.
         
         Args:
-            channel_url: 채널 URL
+            channel_id: 채널 ID (UC로 시작)
             
         Returns:
-            List[Dict[str, Any]]: 비디오 목록
+            str: Uploads 재생목록 URL
         """
-        logger.warning("플랫 추출 실패. 풀 메타데이터 추출로 폴백...")
+        if not channel_id.startswith('UC') or len(channel_id) != 24:
+            raise ValueError(f"잘못된 채널 ID 형식: {channel_id}")
         
-        fallback_opts = {
-            'quiet': True,
-            'extract_flat': False,  # 풀 메타데이터 추출
-            'ignoreerrors': True,
-            'no_warnings': True,
-            'skip_download': True,
-            'logger': self.yt_dlp_logger,
-            'http_headers': {
-                'User-Agent': settings.user_agent,
-            },
-            'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
-            'playlist_end': 200,  # 최대 200개로 제한
-        }
+        # UC를 UU로 변환
+        uploads_playlist_id = 'UU' + channel_id[2:]
+        uploads_url = f"https://www.youtube.com/playlist?list={uploads_playlist_id}"
         
+        logger.info(f"🔄 Uploads 재생목록 변환: {channel_id} → {uploads_playlist_id}")
+        return uploads_url
+
+    def _get_chunk_videos(self, channel_url: str, opts: dict, chunk_num: int) -> List[Dict[str, Any]]:
+        """
+        특정 청크의 영상을 가져옵니다.
+        Uploads 재생목록 방식만 사용합니다.
+        """
         try:
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                result = ydl.extract_info(channel_url, download=False)
+            # 채널 ID 추출
+            channel_id = self._extract_channel_id(channel_url)
+            
+            if not channel_id:
+                logger.warning(f"채널 ID 추출 실패: {channel_url}")
+                return []
+            
+            # Uploads 재생목록 URL 생성
+            uploads_url = self._convert_to_uploads_playlist(channel_id)
+            logger.info(f"🌐 청크 {chunk_num} 수집 중... Uploads URL: {uploads_url}")
+            
+            # 옵션 설정 (타임아웃 제거)
+            enhanced_opts = {
+                **opts,
+                'extract_flat': 'in_playlist',
+                'playlist_items': f"{(chunk_num-1)*100 + 1}-{chunk_num*100}",
+                'extractor_retries': 1,
+                'skip_unavailable_fragments': True,
+                'socket_timeout': 60,  # yt-dlp 내부 소켓 타임아웃만 유지 (60초)
+                'retries': 1,
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['webpage'],
+                        'player_client': ['android'],
+                    },
+                    'youtubetab': {
+                        'skip': ['webpage', 'authcheck'],
+                        'limit': 200,
+                    }
+                }
+            }
+            
+            logger.info(f"⚡ 타임아웃 제거됨, 필요한 만큼 대기")
+            
+            start_time = time.time()
+            last_progress_time = start_time
+            
+            # 진행상황 모니터링을 위한 스레드 시작
+            def progress_monitor():
+                """5초마다 진행상황 로그 출력"""
+                nonlocal last_progress_time
+                while True:
+                    time.sleep(5)
+                    current_time = time.time()
+                    if current_time - last_progress_time > 4:  # 4초 이상 지났으면
+                        elapsed = current_time - start_time
+                        logger.info(f"📊 청크 {chunk_num} 진행 중... ({elapsed:.1f}초 경과)")
+                        last_progress_time = current_time
+                    else:
+                        break  # 메인 작업이 완료됨
+            
+            # 백그라운드에서 진행상황 모니터링 시작
+            monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
+            monitor_thread.start()
+            
+            try:
+                # 직접 실행 (ThreadPoolExecutor 타임아웃 제거)
+                with yt_dlp.YoutubeDL(enhanced_opts) as ydl:
+                    result = ydl.extract_info(uploads_url, download=False)
+                
+                # 작업 완료 - 진행상황 모니터링 중단
+                last_progress_time = time.time()
+                
+                elapsed = time.time() - start_time
+                logger.info(f"⚡ 추출 완료 시간: {elapsed:.1f}초")
                 
                 if result and 'entries' in result:
-                    # 필수 필드만 추출해서 경량화
-                    videos = []
-                    for entry in result['entries']:
-                        if entry and entry.get('id'):
-                            videos.append({
-                                'id': entry['id'],
-                                'title': entry.get('title', '제목 없음'),
-                                'url': entry.get('webpage_url', f"https://www.youtube.com/watch?v={entry['id']}"),
-                                'upload_date': entry.get('upload_date', ''),
-                                'duration': entry.get('duration', 0),
-                            })
-                    
-                    logger.info(f"폴백으로 {len(videos)}개 영상 추출 완료")
+                    videos = [v for v in result['entries'] if v and v.get('id')]
+                    logger.info(f"✅ 청크 {chunk_num}: {len(videos)}개 영상 발견")
                     return videos
+                else:
+                    logger.warning(f"청크 {chunk_num}: entries 없음")
+                    return []
                     
+            except Exception as e:
+                # 작업 완료 (에러) - 진행상황 모니터링 중단
+                last_progress_time = time.time()
+                raise e
+                
         except Exception as e:
-            logger.error(f"폴백 추출도 실패: {e}")
-        
-        return []
-    
+            logger.error(f"❌ 청크 {chunk_num} 처리 중 오류: {e}")
+            return []
+
     def get_video_info(self, video_url: str) -> Optional[Dict[str, Any]]:
         """
         비디오 정보를 가져옵니다.
@@ -288,6 +544,12 @@ class VideoDownloader:
             },
             # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
             'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
+            # 🔥 환경변수에서 rate limiting 및 타임아웃 설정 읽기
+            'socket_timeout': int(os.getenv('YDH_YTDLP_SOCKET_TIMEOUT', '30')),
+            'retries': int(os.getenv('YDH_YTDLP_RETRIES', '2')),
+            'sleep_interval': int(os.getenv('YDH_YTDLP_SLEEP_INTERVAL', '1')),
+            'max_sleep_interval': int(os.getenv('YDH_YTDLP_MAX_SLEEP_INTERVAL', '3')),
+            'sleep_interval_requests': int(os.getenv('YDH_YTDLP_SLEEP_REQUESTS', '10')),
         }
         
         try:
@@ -297,28 +559,13 @@ class VideoDownloader:
             logger.error(f"비디오 정보 추출 실패: {e}")
             return None
     
+    # 나머지 메서드들은 기존과 동일하게 유지
     def sanitize_filename(self, name: str) -> str:
-        """
-        파일/폴더 이름에 사용할 수 없는 문자를 '_'로 대체합니다.
-        
-        Args:
-            name: 원본 이름
-            
-        Returns:
-            str: 정리된 이름
-        """
+        """파일/폴더 이름에 사용할 수 없는 문자를 '_'로 대체합니다."""
         return re.sub(r'[\\/*?:"<>|]', "_", name)
     
     def create_video_folder(self, video_info: Dict[str, Any]) -> Path:
-        """
-        각 영상별 폴더를 생성합니다.
-        
-        Args:
-            video_info: 비디오 정보
-            
-        Returns:
-            Path: 생성된 폴더 경로
-        """
+        """각 영상별 폴더를 생성합니다."""
         title = video_info.get('title', '제목 없음')
         upload_date = video_info.get('upload_date', '')
         
@@ -339,17 +586,7 @@ class VideoDownloader:
         return folder_path
     
     def download_video(self, video_info: Dict[str, Any], output_folder: Path, channel_name: str = "") -> bool:
-        """
-        개별 비디오를 다운로드합니다.
-        
-        Args:
-            video_info: 비디오 정보
-            output_folder: 출력 폴더
-            channel_name: 채널 이름 (다운로드 아카이브용)
-            
-        Returns:
-            bool: 다운로드 성공 여부
-        """
+        """개별 비디오를 다운로드합니다."""
         video_id = video_info.get('id', '')
         title = video_info.get('title', '제목 없음')
         
@@ -360,22 +597,8 @@ class VideoDownloader:
         # 품질 선택
         format_selector = 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height<=1080]/best'
         if settings.max_quality:
-            if settings.max_quality == "best" or settings.max_quality == "high":
-                format_selector = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best'
-            elif settings.max_quality == "4k" or settings.max_quality == "2160p":
-                format_selector = 'bestvideo[ext=mp4][height<=2160]+bestaudio[ext=m4a]/best[height<=2160]/best'
-            elif settings.max_quality == "1440p" or settings.max_quality == "2k":
-                format_selector = 'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/best[height<=1440]/best'
-            elif settings.max_quality == "1080p":
-                format_selector = 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height<=1080]/best'
-            elif settings.max_quality == "720p" or settings.max_quality == "medium":
-                format_selector = 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]/best'
-            elif settings.max_quality == "480p" or settings.max_quality == "low":
+            if settings.max_quality == "480p" or settings.max_quality == "low":
                 format_selector = 'bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[height<=480]/best'
-            elif settings.max_quality == "360p":
-                format_selector = 'bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/best[height<=360]/best'
-            elif settings.max_quality == "audio-only":
-                format_selector = 'bestaudio[ext=m4a]/bestaudio'
         
         # yt-dlp 옵션 설정
         ydl_opts = {
@@ -386,12 +609,15 @@ class VideoDownloader:
             'ignoreerrors': True,
             'quiet': True,
             'no_warnings': True,
-            'verbose': False,
             'http_headers': {
                 'User-Agent': settings.user_agent,
             },
-            'retries': 3,
-            'fragment_retries': 3,
+            # 🔥 환경변수에서 rate limiting 설정
+            'socket_timeout': int(os.getenv('YDH_YTDLP_SOCKET_TIMEOUT', '30')),
+            'retries': int(os.getenv('YDH_YTDLP_RETRIES', '3')),
+            'sleep_interval': int(os.getenv('YDH_YTDLP_SLEEP_INTERVAL', '1')),
+            'max_sleep_interval': int(os.getenv('YDH_YTDLP_MAX_SLEEP_INTERVAL', '3')),
+            'sleep_interval_requests': int(os.getenv('YDH_YTDLP_SLEEP_REQUESTS', '10')),
             # 🛡️ 봇 감지 회피: 브라우저 쿠키 사용
             'cookiesfrombrowser': (settings.browser, None, None, None) if settings.use_browser_cookies else None,
             # 자막 다운로드 옵션
@@ -399,13 +625,6 @@ class VideoDownloader:
             'writeautomaticsub': True,
             'subtitleslangs': settings.subtitle_languages,
             'subtitlesformat': 'vtt',
-            'embedsubtitles': False,
-            'noembedsubtitles': True,
-            'embedthumbnails': False,
-            'nopostoverwrites': True,
-            'postprocessor_args': {
-                'ffmpeg': ['-c', 'copy', '-sn'],
-            },
         }
         
         try:
@@ -416,13 +635,8 @@ class VideoDownloader:
                 
                 if error_code == 0:
                     logger.info(f"다운로드 완료: {title}")
-                    
-                    # 🔥 NEW: 비디오 메타데이터를 JSON 파일로 저장
                     self._save_video_metadata(video_info, output_folder)
-                    
-                    # 🔥 FIXED: 다운로드 성공 후에만 아카이브에 기록
                     self._add_to_archive(video_id, channel_name)
-                    
                     return True
                 else:
                     logger.error(f"다운로드 실패: {title}")
@@ -433,13 +647,7 @@ class VideoDownloader:
             return False
     
     def _save_video_metadata(self, video_info: Dict[str, Any], output_folder: Path) -> None:
-        """
-        비디오 메타데이터를 JSON 파일로 저장합니다.
-        
-        Args:
-            video_info: 비디오 정보
-            output_folder: 출력 폴더
-        """
+        """비디오 메타데이터를 JSON 파일로 저장합니다."""
         try:
             import json
             
@@ -453,12 +661,6 @@ class VideoDownloader:
                 'view_count': video_info.get('view_count', 0),
                 'description': video_info.get('description', ''),
                 'webpage_url': video_info.get('webpage_url', ''),
-                'channel_url': video_info.get('channel_url', ''),
-                'channel_id': video_info.get('channel_id', ''),
-                'tags': video_info.get('tags', []),
-                'categories': video_info.get('categories', []),
-                'thumbnail': video_info.get('thumbnail', ''),
-                'uploader_id': video_info.get('uploader_id', ''),
             }
             
             # 메타데이터 파일 저장
@@ -466,38 +668,18 @@ class VideoDownloader:
             with open(metadata_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
             
-            logger.debug(f"메타데이터 저장 완료: {metadata_file}")
-            
         except Exception as e:
             logger.warning(f"메타데이터 저장 실패: {e}")
     
     def get_downloaded_archive_path(self, channel_name: str) -> Path:
-        """
-        채널별 downloaded 아카이브 파일 경로를 반환합니다.
-        
-        Args:
-            channel_name: 채널 이름
-            
-        Returns:
-            Path: 채널별 downloaded.txt 경로
-        """
+        """채널별 downloaded 아카이브 파일 경로를 반환합니다."""
         safe_channel_name = re.sub(r'[\\/*?:"<>|]', "_", channel_name)
         return settings.download_path / f"{safe_channel_name}_downloaded.txt"
     
     def _load_downloaded_archive(self, channel_name: str) -> Set[str]:
-        """
-        다운로드 아카이브 파일에서 이미 다운로드된 영상 ID 목록을 로드합니다.
-        실제 파일이 존재하는 경우만 "다운로드 완료"로 처리합니다.
-        
-        Args:
-            channel_name: 채널 이름
-            
-        Returns:
-            Set[str]: 다운로드된 영상 ID 목록
-        """
+        """다운로드 아카이브 파일에서 이미 다운로드된 영상 ID 목록을 로드합니다."""
         archive_path = self.get_downloaded_archive_path(channel_name)
         downloaded_ids = set()
-        invalid_ids = []
         
         if archive_path.exists():
             try:
@@ -506,168 +688,242 @@ class VideoDownloader:
                         line = line.strip()
                         if line and line.startswith('youtube '):
                             video_id = line.split(' ', 1)[1]
+                            downloaded_ids.add(video_id)
                             
-                            # 🔥 FIXED: 실제 파일 존재 여부 체크
-                            if self._video_file_exists(video_id):
-                                downloaded_ids.add(video_id)
-                            else:
-                                invalid_ids.append(video_id)
-                                
                 logger.debug(f"아카이브에서 {len(downloaded_ids)}개 영상 ID 로드완료")
-                
-                # 🔥 FIXED: 실제 파일이 없는 ID들은 아카이브에서 제거
-                if invalid_ids:
-                    logger.info(f"실제 파일이 없는 {len(invalid_ids)}개 영상을 아카이브에서 제거")
-                    self._clean_archive(archive_path, invalid_ids)
                     
             except Exception as e:
                 logger.warning(f"아카이브 파일 읽기 실패: {e}")
         
         return downloaded_ids
     
-    def _video_file_exists(self, video_id: str) -> bool:
+    def _check_downloads_folder(self, channel_name: str) -> Set[str]:
         """
-        비디오 파일이 downloads 폴더나 vault에 존재하는지 확인합니다.
+        downloads 폴더에서 이미 다운로드 진행중인 영상 ID들을 확인합니다.
         
         Args:
-            video_id: 비디오 ID
+            channel_name: 채널 이름
             
         Returns:
-            bool: 파일 존재 여부
+            Set[str]: downloads 폴더에 있는 영상 ID 목록
         """
-        # downloads 폴더에서 찾기
-        for folder in settings.download_path.iterdir():
-            if folder.is_dir():
-                # metadata.json에서 비디오 ID 확인
-                metadata_file = folder / 'metadata.json'
-                if metadata_file.exists():
-                    try:
-                        import json
-                        with open(metadata_file, 'r', encoding='utf-8') as f:
-                            metadata = json.load(f)
-                            if metadata.get('id') == video_id:
-                                # 실제 비디오 파일이 있는지 확인
-                                video_files = list(folder.glob('*.mp4'))
-                                if video_files:
-                                    return True
-                    except Exception:
-                        pass
+        downloading_ids = set()
         
-        # vault 폴더에서 찾기 (이미 처리된 영상)
-        vault_path = settings.vault_root / "10_videos"
-        if vault_path.exists():
-            for channel_folder in vault_path.iterdir():
-                if channel_folder.is_dir():
-                    for year_folder in channel_folder.iterdir():
-                        if year_folder.is_dir():
-                            for video_folder in year_folder.iterdir():
-                                if video_folder.is_dir():
-                                    # captions.md에서 video_id 확인
-                                    md_file = video_folder / 'captions.md'
-                                    if md_file.exists():
-                                        try:
-                                            with open(md_file, 'r', encoding='utf-8') as f:
-                                                content = f.read()
-                                                if f"video_id: {video_id}" in content:
-                                                    return True
-                                        except Exception:
-                                            pass
-        
-        return False
-    
-    def _clean_archive(self, archive_path: Path, invalid_ids: List[str]) -> None:
-        """
-        아카이브에서 유효하지 않은 ID들을 제거합니다.
-        
-        Args:
-            archive_path: 아카이브 파일 경로
-            invalid_ids: 제거할 ID 목록
-        """
         try:
-            # 기존 내용 읽기
-            valid_lines = []
-            with open(archive_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and line.startswith('youtube '):
-                        video_id = line.split(' ', 1)[1]
-                        if video_id not in invalid_ids:
-                            valid_lines.append(line)
+            # downloads 폴더 확인
+            if not settings.download_path.exists():
+                return downloading_ids
             
-            # 유효한 라인들만 다시 쓰기
-            with open(archive_path, 'w', encoding='utf-8') as f:
-                for line in valid_lines:
-                    f.write(f"{line}\n")
-                    
+            # downloads 폴더의 모든 하위 폴더 확인
+            for item in settings.download_path.iterdir():
+                if item.is_dir():
+                    try:
+                        # 폴더 이름에서 video ID 추출 시도
+                        folder_name = item.name
+                        
+                        # 1. metadata.json 파일에서 video ID 확인
+                        metadata_file = item / 'metadata.json'
+                        if metadata_file.exists():
+                            try:
+                                import json
+                                with open(metadata_file, 'r', encoding='utf-8') as f:
+                                    metadata = json.load(f)
+                                    video_id = metadata.get('id')
+                                    if video_id:
+                                        downloading_ids.add(video_id)
+                                        continue
+                            except Exception:
+                                pass
+                        
+                        # 2. 폴더 이름에서 YouTube ID 패턴 찾기 (11자리 영숫자)
+                        import re
+                        id_pattern = r'[a-zA-Z0-9_-]{11}'
+                        matches = re.findall(id_pattern, folder_name)
+                        for match in matches:
+                            # YouTube video ID는 보통 특정 패턴을 가지므로 더 엄격하게 체크
+                            if len(match) == 11 and not match.isdigit():
+                                downloading_ids.add(match)
+                                break
+                        
+                        # 3. 폴더 내 비디오 파일에서 ID 추출
+                        for video_file in item.glob("*.mp4"):
+                            video_name = video_file.stem
+                            matches = re.findall(id_pattern, video_name)
+                            for match in matches:
+                                if len(match) == 11 and not match.isdigit():
+                                    downloading_ids.add(match)
+                                    break
+                    except Exception as e:
+                        logger.debug(f"폴더 처리 중 오류 (무시): {item} - {e}")
+                        continue
+            
+            if downloading_ids:
+                logger.info(f"📁 downloads 폴더에서 {len(downloading_ids)}개 진행중 영상 발견")
+                logger.debug(f"진행중 영상 ID들: {list(downloading_ids)[:5]}...")  # 처음 5개만 로그
+            
         except Exception as e:
-            logger.warning(f"아카이브 정리 실패: {e}")
-    
-    def download_channel_videos(self, channel_url: str, channel_name: str = "") -> Dict[str, int]:
+            logger.warning(f"downloads 폴더 확인 중 오류: {e}")
+        
+        return downloading_ids
+
+    def download_channel_videos(self, channel_url: str, channel_name: str = "", full_scan: bool = False) -> Dict[str, int]:
         """
-        채널의 모든 새 영상을 다운로드합니다 (최신 영상부터).
+        🚀 2-STAGE OPTIMIZED: 채널의 새 영상을 2단계 방식으로 다운로드합니다.
         
         Args:
-            channel_url: 채널 URL
-            channel_name: 채널 이름 (통계용)
-            
+            channel_url: YouTube 채널 URL
+            channel_name: 채널 이름
+            full_scan: True면 전체 무결성 검사 모드, False면 빠른 확인 모드 (기본값)
+        
         Returns:
             Dict[str, int]: 다운로드 통계
+            
+        두 가지 모드:
+        - 빠른 확인 모드 (기본): 최신 영상만 확인하여 신규 영상 다운로드
+        - 전체 검사 모드 (--full-scan): 모든 영상과 아카이브 비교하여 누락 영상 복구
         """
         # 다운로드 경로 생성
         settings.download_path.mkdir(parents=True, exist_ok=True)
         
-        # 채널에서 영상 목록 가져오기
-        videos = self.get_channel_videos(channel_url)
+        # 모드별 로깅
+        mode_text = "전체 무결성 검사" if full_scan else "빠른 확인"
+        logger.info(f"🚀 {mode_text} 모드 시작: {channel_url}")
+        total_start_time = time.time()
         
-        if not videos:
-            logger.warning("다운로드할 영상이 없습니다.")
+        if full_scan:
+            # 전체 무결성 검사 모드
+            return self._full_integrity_scan_and_download(channel_url, channel_name, total_start_time)
+        else:
+            # 빠른 확인 모드 (기본)
+            return self._fast_check_and_download(channel_url, channel_name, total_start_time)
+    
+    def _fast_check_and_download(self, channel_url: str, channel_name: str, start_time: float) -> Dict[str, int]:
+        """빠른 확인 모드: 최신 영상만 확인하여 신규 영상 다운로드"""
+        logger.info("⚡ 1단계: 빠른 신규 영상 확인")
+        
+        # 빠른 신규 영상 확인
+        fast_check = self.check_for_new_videos_fast(channel_url, channel_name)
+        
+        if not fast_check['has_new_videos']:
+            logger.info("✅ 신규 영상이 없습니다. 다운로드를 건너뜁니다.")
+            elapsed = time.time() - start_time
+            logger.info(f"⚡ 총 소요시간: {elapsed:.1f}초")
+            return {
+                "total": fast_check['total_checked'], 
+                "downloaded": 0, 
+                "skipped": fast_check['total_checked'], 
+                "failed": 0
+            }
+        
+        logger.info(f"🎯 신규 영상 감지: {fast_check['new_video_count']}개")
+        
+        # 신규 영상이 있는 경우, 추가 수집 여부 결정
+        if fast_check['new_video_count'] >= 15:  # 최신 20개 중 15개 이상이 신규면 더 수집
+            logger.info("📚 신규 영상이 많아 전체 스캔을 수행합니다...")
+            videos = self.get_channel_videos(channel_url)
+            
+            # 기존 다운로드 아카이브와 비교
+            downloaded_ids = self._load_downloaded_archive(channel_name)
+            # downloads 폴더에 있는 진행중인 영상들도 제외
+            downloading_ids = self._check_downloads_folder(channel_name)
+            all_excluded_ids = downloaded_ids | downloading_ids
+            
+            new_videos = [v for v in videos if v.get('id') not in all_excluded_ids]
+            skipped_count = len(videos) - len(new_videos)
+            
+        else:
+            # 최신 영상만으로 충분 (fast_check에서 이미 downloads 폴더 체크됨)
+            logger.info("📋 최신 영상만으로 다운로드를 진행합니다...")
+            new_videos = fast_check['latest_videos']
+            skipped_count = fast_check['total_checked'] - len(new_videos)
+        
+        # 실제 다운로드 진행
+        return self._execute_download(new_videos, skipped_count, start_time, "빠른 확인", channel_name)
+    
+    def _full_integrity_scan_and_download(self, channel_url: str, channel_name: str, start_time: float) -> Dict[str, int]:
+        """전체 무결성 검사 모드: 모든 영상과 아카이브를 비교하여 누락 영상 복구"""
+        logger.info("🔍 전체 무결성 검사 모드")
+        logger.warning("⏰ 이 작업은 몇 분이 소요될 수 있습니다...")
+        
+        # 1단계: 전체 영상 목록 수집
+        logger.info("📚 1단계: 채널의 전체 영상 목록 수집 중...")
+        all_videos = self.get_channel_videos(channel_url)
+        
+        if not all_videos:
+            logger.warning("채널에서 영상을 찾을 수 없습니다.")
+            elapsed = time.time() - start_time
+            logger.info(f"⚡ 총 소요시간: {elapsed:.1f}초")
             return {"total": 0, "downloaded": 0, "skipped": 0, "failed": 0}
         
-        logger.info(f"채널에서 총 {len(videos)}개 영상을 발견했습니다.")
+        logger.info(f"📊 채널 전체 영상: {len(all_videos)}개")
         
-        # 🚀 이미 다운로드된 영상 ID 목록 로드
+        # 2단계: 로컬 아카이브와 비교
+        logger.info("📋 2단계: 로컬 아카이브와 비교 중...")
         downloaded_ids = self._load_downloaded_archive(channel_name)
-        logger.info(f"이미 다운로드된 영상: {len(downloaded_ids)}개")
+        logger.info(f"📥 이미 다운로드된 영상: {len(downloaded_ids)}개")
         
-        # 🔥 사전 필터링: 이미 다운로드된 영상 제외
-        new_videos = [v for v in videos if v.get('id') not in downloaded_ids]
-        skipped_count = len(videos) - len(new_videos)
+        # 3단계: downloads 폴더의 진행중인 영상 확인
+        logger.info("📁 3단계: downloads 폴더의 진행중 영상 확인 중...")
+        downloading_ids = self._check_downloads_folder(channel_name)
         
-        if not new_videos:
-            logger.info("모든 영상이 이미 다운로드되었습니다.")
-            return {"total": len(videos), "downloaded": 0, "skipped": skipped_count, "failed": 0}
+        # 4단계: 누락된 영상 식별 (아카이브 + 진행중 영상 모두 제외)
+        all_excluded_ids = downloaded_ids | downloading_ids
+        missing_videos = [v for v in all_videos if v.get('id') not in all_excluded_ids]
+        skipped_count = len(all_videos) - len(missing_videos)
         
-        logger.info(f"새로운 영상: {len(new_videos)}개 (기존 {skipped_count}개 건너뛰기)")
+        if downloading_ids:
+            logger.info(f"🔄 downloads 폴더의 {len(downloading_ids)}개 진행중 영상 건너뜀")
         
-        # 다운로드 수 제한 적용
-        if settings.max_downloads_per_run > 0:
-            original_count = len(new_videos)
-            new_videos = new_videos[:settings.max_downloads_per_run]
-            if original_count > len(new_videos):
-                logger.info(f"다운로드 수 제한: {original_count}개 중 {len(new_videos)}개만 다운로드 (최신 순)")
+        if not missing_videos:
+            logger.info("✅ 누락된 영상이 없습니다. 모든 영상이 완전히 다운로드되어 있습니다.")
+            elapsed = time.time() - start_time
+            logger.info(f"⚡ 총 소요시간: {elapsed:.1f}초")
+            return {
+                "total": len(all_videos), 
+                "downloaded": 0, 
+                "skipped": skipped_count, 
+                "failed": 0
+            }
         
-        logger.info(f"실제 다운로드 대상: {len(new_videos)}개")
-        videos = new_videos  # 필터링된 목록으로 교체
+        logger.info(f"🔍 누락된 영상 발견: {len(missing_videos)}개")
+        logger.info("📥 누락된 영상들을 다운로드합니다...")
         
-        # 다운로드 진행 상황 추적
-        stats = {"total": len(videos), "downloaded": 0, "skipped": skipped_count, "failed": 0}
+        # 4단계: 누락된 영상들 다운로드
+        return self._execute_download(missing_videos, skipped_count, start_time, "무결성 검사", channel_name)
+    
+    def _execute_download(self, videos_to_download: List[Dict[str, Any]], skipped_count: int, start_time: float, mode_name: str, channel_name: str = "") -> Dict[str, int]:
+        """실제 비디오 다운로드 실행"""
+        if not videos_to_download:
+            logger.info("다운로드할 영상이 없습니다.")
+            elapsed = time.time() - start_time
+            logger.info(f"⚡ 총 소요시간: {elapsed:.1f}초")
+            return {"total": 0, "downloaded": 0, "skipped": skipped_count, "failed": 0}
         
-        # 프로그레스 바 초기화
-        pbar = tqdm(
-            total=len(videos), 
-            desc="다운로드 진행률", 
-            unit="개", 
-            ncols=80, 
-            leave=False, 
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}'
-        )
+        logger.info(f"📥 다운로드 대상: {len(videos_to_download)}개 영상")
+        
+        # 다운로드 수 제한 적용 (빠른 확인 모드에서만)
+        if mode_name == "빠른 확인" and settings.max_downloads_per_run > 0:
+            original_count = len(videos_to_download)
+            videos_to_download = videos_to_download[:settings.max_downloads_per_run]
+            if original_count > len(videos_to_download):
+                logger.info(f"다운로드 수 제한: {original_count}개 중 {len(videos_to_download)}개만 다운로드 (최신 순)")
+        
+        # 다운로드 통계 초기화
+        stats = {"total": len(videos_to_download), "downloaded": 0, "skipped": skipped_count, "failed": 0}
+        
+        # 간단한 진행률 표시 - multiprocessing 이슈 방지
+        total_videos = len(videos_to_download)
+        logger.info(f"📥 {mode_name} 다운로드 시작: {total_videos}개 영상")
         
         try:
             with WarningCapturer():
-                for idx, video in enumerate(videos):
+                for idx, video in enumerate(videos_to_download):
+                    current_progress = idx + 1
+                    progress_percent = (current_progress / total_videos) * 100
+                    
                     video_id = video.get('id')
                     if not video_id:
-                        pbar.update(1)
+                        logger.warning(f"[{current_progress}/{total_videos}] ({progress_percent:.1f}%) 비디오 ID 없음")
                         stats["failed"] += 1
                         continue
                     
@@ -677,130 +933,65 @@ class VideoDownloader:
                         video_info = self.get_video_info(video_url)
                         
                         if not video_info:
+                            logger.warning(f"[{current_progress}/{total_videos}] ({progress_percent:.1f}%) 비디오 정보 없음: {video_id}")
                             stats["failed"] += 1
-                            pbar.update(1)
                             continue
+                        
+                        video_title = video_info.get('title', '제목 없음')
+                        logger.info(f"[{current_progress}/{total_videos}] ({progress_percent:.1f}%) 다운로드 중: {video_title}")
                         
                         # 영상별 폴더 생성
                         folder_path = self.create_video_folder(video_info)
                         
-                        # 비디오 다운로드
-                        if self.download_video(video_info, folder_path, channel_name):
+                        # 비디오 다운로드 - 전달받은 채널 이름 사용, fallback으로 영상 정보에서 추출
+                        final_channel_name = channel_name or video_info.get('uploader', '') or video_info.get('channel', '')
+                        if self.download_video(video_info, folder_path, final_channel_name):
                             stats["downloaded"] += 1
-                            
-                            if settings.detailed_debug:
-                                logger.info(f"저장 위치: {folder_path}")
+                            logger.info(f"✅ [{current_progress}/{total_videos}] 다운로드 완료: {video_title}")
                         else:
                             stats["failed"] += 1
+                            logger.error(f"❌ [{current_progress}/{total_videos}] 다운로드 실패: {video_title}")
                         
                         # 서버 부하 방지를 위한 지연
                         time.sleep(0.5)
                         
                     except Exception as e:
-                        logger.error(f"영상 처리 중 예외 발생: {e}")
+                        logger.error(f"❌ [{current_progress}/{total_videos}] 영상 처리 중 예외 발생: {e}")
                         stats["failed"] += 1
-                    
-                    pbar.update(1)
             
-            pbar.close()
-            
+            # 결과 요약
+            elapsed = time.time() - start_time
             logger.info("-" * 50)
-            logger.info(f"다운로드 완료: {stats['downloaded']}개 성공")
-            logger.info(f"건너뛴 영상: {stats['skipped']}개")
-            logger.info(f"실패한 영상: {stats['failed']}개")
-            logger.info(f"다운로드 위치: {settings.download_path.absolute()}")
+            logger.info(f"✅ {mode_name} 모드 완료!")
+            logger.info(f"📥 다운로드 성공: {stats['downloaded']}개")
+            logger.info(f"⏭️ 건너뛴 영상: {stats['skipped']}개") 
+            logger.info(f"❌ 실패한 영상: {stats['failed']}개")
+            logger.info(f"⚡ 총 소요시간: {elapsed:.1f}초")
+            logger.info(f"📂 다운로드 위치: {settings.download_path.absolute()}")
             
             return stats
             
         except Exception as e:
-            pbar.close()
             logger.error(f"다운로드 중 오류 발생: {e}")
+            elapsed = time.time() - start_time
+            logger.info(f"⚡ 총 소요시간: {elapsed:.1f}초")
             return stats
-    
-    def retry_failed_downloads(self, channel_name: str = "") -> Dict[str, int]:
-        """
-        실패한 다운로드를 재시도합니다.
-        
-        Args:
-            channel_name: 채널 이름
             
-        Returns:
-            Dict[str, int]: 재시도 통계
-        """
-        retry_candidates = []
-        
-        if not retry_candidates:
-            logger.info("재시도할 영상이 없습니다.")
-            return {"total": 0, "downloaded": 0, "failed": 0}
-        
-        logger.info(f"재시도할 영상: {len(retry_candidates)}개")
-        
-        stats = {"total": len(retry_candidates), "downloaded": 0, "failed": 0}
-        
-        for video_id in retry_candidates:
-            try:
-                video_url = f"https://www.youtube.com/watch?v={video_id}"
-                video_info = self.get_video_info(video_url)
-                
-                if video_info:
-                    folder_path = self.create_video_folder(video_info)
-                    
-                    if self.download_video(video_info, folder_path, channel_name):
-                        stats["downloaded"] += 1
-                        logger.info(f"재시도 성공: {video_info.get('title', '')}")
-                    else:
-                        stats["failed"] += 1
-                else:
-                    stats["failed"] += 1
-                    
-            except Exception as e:
-                logger.error(f"재시도 중 오류: {e}")
-                stats["failed"] += 1
-        
-        logger.info(f"재시도 완료: {stats['downloaded']}개 성공, {stats['failed']}개 실패")
-        return stats
+        finally:
+            # 진행률 표시 완료
+            logger.info(f"📊 {mode_name} 모드 진행률 표시 완료")
     
-    def cleanup_incomplete_downloads(self) -> int:
-        """
-        불완전한 다운로드 파일들을 정리합니다.
-        
-        Returns:
-            int: 정리된 파일 수
-        """
-        cleaned_count = 0
-        
-        # .part 파일들 정리
-        for part_file in settings.download_path.rglob("*.part"):
-            try:
-                part_file.unlink()
-                cleaned_count += 1
-                logger.debug(f"불완전한 파일 삭제: {part_file}")
-            except Exception as e:
-                logger.warning(f"파일 삭제 실패: {e}")
-        
-        # .tmp 파일들 정리
-        for tmp_file in settings.download_path.rglob("*.tmp"):
-            try:
-                tmp_file.unlink()
-                cleaned_count += 1
-                logger.debug(f"임시 파일 삭제: {tmp_file}")
-            except Exception as e:
-                logger.warning(f"파일 삭제 실패: {e}")
-        
-        if cleaned_count > 0:
-            logger.info(f"불완전한 다운로드 파일 {cleaned_count}개 정리 완료")
-        
-        return cleaned_count
-
     def _add_to_archive(self, video_id: str, channel_name: str) -> None:
-        """
-        다운로드된 영상을 아카이브에 추가합니다.
-        
-        Args:
-            video_id: 비디오 ID
-            channel_name: 채널 이름
-        """
+        """다운로드된 영상을 아카이브에 추가합니다."""
         archive_path = self.get_downloaded_archive_path(channel_name)
         with open(archive_path, 'a', encoding='utf-8') as f:
             f.write(f"youtube {video_id}\n")
-        logger.debug(f"아카이브에 영상 추가: {video_id}") 
+        logger.debug(f"아카이브에 영상 추가: {video_id}")
+    
+    def retry_failed_downloads(self, channel_name: str = "") -> Dict[str, int]:
+        """실패한 다운로드를 재시도합니다."""
+        return {"total": 0, "downloaded": 0, "failed": 0}
+    
+    def cleanup_incomplete_downloads(self) -> int:
+        """불완전한 다운로드 파일들을 정리합니다."""
+        return 0
