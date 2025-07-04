@@ -50,6 +50,7 @@ export const AIQuestionTab: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<AIProgress | null>(null);
   const [progressHistory, setProgressHistory] = useState<AIProgress[]>([]);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [history, setHistory] = useState<Array<{
     query: string;
     response: AIResponse;
@@ -181,26 +182,62 @@ export const AIQuestionTab: React.FC = () => {
     if (!sourcesData) return [];
     
     try {
+      console.log('🔍 파싱할 소스 데이터:', sourcesData);
+      
       // 이미 VideoSource[] 형태인 경우
       if (Array.isArray(sourcesData) && sourcesData.length > 0 && 
           typeof sourcesData[0] === 'object' && 'video_id' in sourcesData[0]) {
-        return sourcesData.map(source => ({
-          video_id: source.video_id || `unknown_${Date.now()}`,
-          title: source.title || '제목 없음',
+        return sourcesData.map((source, index) => ({
+          video_id: source.video_id || `unknown_${Date.now()}_${index}`,
+          title: source.title || source.video_title || `영상 ${index + 1}`,
           timestamp: source.timestamp || undefined,
-          relevance_score: source.relevance_score || 0.5,
-          excerpt: source.excerpt || '내용 없음'
+          relevance_score: source.relevance_score || source.similarity || 0.8,
+          excerpt: source.excerpt || source.content || source.description || '내용 없음'
         }));
+      }
+      
+      // 백엔드에서 SearchDocument 객체 배열로 오는 경우
+      if (Array.isArray(sourcesData) && sourcesData.length > 0 && 
+          typeof sourcesData[0] === 'object') {
+        return sourcesData.map((doc, index) => {
+          console.log(`📄 처리 중인 문서 ${index}:`, doc);
+          
+          // 다양한 필드명 확인
+          const videoId = doc.video_id || doc.id || doc.document_id || `video_${index}_${Date.now()}`;
+          const title = doc.title || doc.video_title || doc.name || `📺 영상 ${index + 1}`;
+          const relevance = doc.relevance_score || doc.similarity || doc.score || 0.8;
+          const content = doc.excerpt || doc.content || doc.description || doc.text || '내용 없음';
+          
+          return {
+            video_id: videoId,
+            title: title,
+            timestamp: doc.timestamp || undefined,
+            relevance_score: relevance,
+            excerpt: content.length > 100 ? content.substring(0, 100) + '...' : content
+          };
+        });
       }
       
       // 문자열 배열인 경우 파싱
       if (Array.isArray(sourcesData)) {
-        return sourcesData.map((sourceStr, index) => ({
-          video_id: `source_${index}_${Date.now()}`,
-          title: typeof sourceStr === 'string' ? sourceStr.slice(0, 50) : `소스 ${index + 1}`,
-          relevance_score: 0.8,
-          excerpt: typeof sourceStr === 'string' ? sourceStr.slice(0, 100) : '내용을 확인할 수 없습니다.'
-        }));
+        return sourcesData.map((sourceStr, index) => {
+          console.log(`📝 문자열 소스 ${index}:`, sourceStr);
+          
+          // YouTube video ID 패턴 검사 (11자리 영숫자)
+          const youtubeIdMatch = typeof sourceStr === 'string' ? 
+            sourceStr.match(/[a-zA-Z0-9_-]{11}/) : null;
+          
+          return {
+            video_id: youtubeIdMatch ? youtubeIdMatch[0] : `source_${index}_${Date.now()}`,
+            title: typeof sourceStr === 'string' ? 
+              (sourceStr.length > 50 ? sourceStr.substring(0, 50) + '...' : sourceStr) : 
+              `소스 ${index + 1}`,
+            relevance_score: 0.8,
+            excerpt: typeof sourceStr === 'string' ? 
+              (sourceStr.length > 100 ? sourceStr.substring(0, 100) + '...' : sourceStr) : 
+              '내용을 확인할 수 없습니다.'
+          };
+        });
       }
       
       // 문자열인 경우 JSON 파싱 시도
@@ -210,12 +247,24 @@ export const AIQuestionTab: React.FC = () => {
           return parseSourcesFromString(parsed); // 재귀 호출
         } catch (jsonError) {
           console.warn('소스 데이터 JSON 파싱 실패:', jsonError);
+          
+          // 단일 문자열에서 YouTube ID 추출 시도
+          const youtubeIdMatch = sourcesData.match(/[a-zA-Z0-9_-]{11}/);
+          if (youtubeIdMatch) {
+            return [{
+              video_id: youtubeIdMatch[0],
+              title: '영상 제목 추출 중...',
+              relevance_score: 0.7,
+              excerpt: sourcesData.substring(0, 100)
+            }];
+          }
+          
           return [];
         }
       }
       
     } catch (error) {
-      console.warn('소스 데이터 파싱 중 오류:', error);
+      console.error('소스 데이터 파싱 중 오류:', error);
     }
     
     return [];
@@ -238,6 +287,11 @@ export const AIQuestionTab: React.FC = () => {
     setError(null);
     setProgress(null);
     setProgressHistory([]);
+    
+    // AbortController 생성 및 설정
+    const controller = new AbortController();
+    setAbortController(controller);
+    
     const startTime = performance.now();
 
     try {
@@ -339,6 +393,7 @@ export const AIQuestionTab: React.FC = () => {
       setError(`AI 질문 처리 중 오류가 발생했습니다: ${err}`);
     } finally {
       setLoading(false);
+      setAbortController(null);
     }
   };
 
@@ -365,19 +420,73 @@ export const AIQuestionTab: React.FC = () => {
     }
   };
 
+  const abortSearch = async () => {
+    if (abortController) {
+      console.log('🛑 검색 중단 요청');
+      abortController.abort();
+      
+      try {
+        // 백엔드에도 중단 신호 전송
+        await invoke('abort_ai_search');
+      } catch (error) {
+        console.warn('백엔드 중단 신호 전송 실패:', error);
+      }
+      
+      setLoading(false);
+      setProgress(null);
+      setProgressHistory([]);
+      setAbortController(null);
+      setError('검색이 사용자에 의해 중단되었습니다.');
+    }
+  };
+
   const getProgressStepClass = (step: string) => {
     const normalizedStep = step.toLowerCase();
-    if (normalizedStep.includes('init')) return 'step-init';
-    if (normalizedStep.includes('query_analysis')) return 'step-analysis';
-    if (normalizedStep.includes('vector') || normalizedStep.includes('검색')) return 'step-search';
-    if (normalizedStep.includes('hyde')) return 'step-hyde';
-    if (normalizedStep.includes('rewrite') || normalizedStep.includes('쿼리')) return 'step-rewrite';
-    if (normalizedStep.includes('merge')) return 'step-merge';
-    if (normalizedStep.includes('context')) return 'step-context';
-    if (normalizedStep.includes('ai_thinking')) return 'step-thinking';
-    if (normalizedStep.includes('result_processing')) return 'step-processing';
+    console.log('🎨 단계 분류:', step, '->', normalizedStep);
+    
+    // 🚀 RAG 시스템 초기화 중...
+    if (normalizedStep.includes('rag') || normalizedStep.includes('시스템') || 
+        normalizedStep.includes('초기화') || normalizedStep.includes('init')) return 'step-init';
+    
+    // 🧠 질문 분석 중...
+    if (normalizedStep.includes('질문') || normalizedStep.includes('분석') || 
+        normalizedStep.includes('analysis')) return 'step-analysis';
+    
+    // 🔍 검색 준비 중... / 🔍 벡터 데이터베이스 검색 중...
+    if (normalizedStep.includes('검색') || normalizedStep.includes('벡터') || 
+        normalizedStep.includes('데이터베이스') || normalizedStep.includes('search') || 
+        normalizedStep.includes('vector') || normalizedStep.includes('준비')) return 'step-search';
+    
+    // 🎯 HyDE 문서 생성 중...
+    if (normalizedStep.includes('hyde') || normalizedStep.includes('문서') || 
+        normalizedStep.includes('가상')) return 'step-hyde';
+    
+    // 🔄 쿼리 재작성 중...
+    if (normalizedStep.includes('쿼리') || normalizedStep.includes('재작성') || 
+        normalizedStep.includes('rewrite')) return 'step-rewrite';
+    
+    // 🔗 검색 결과 병합 중...
+    if (normalizedStep.includes('병합') || normalizedStep.includes('결과') || 
+        normalizedStep.includes('merge') || normalizedStep.includes('중복')) return 'step-merge';
+    
+    // 📖 컨텍스트 구성 중...
+    if (normalizedStep.includes('컨텍스트') || normalizedStep.includes('구성') || 
+        normalizedStep.includes('context') || normalizedStep.includes('정리')) return 'step-context';
+    
+    // 🤖 AI 답변 생성 중...
+    if (normalizedStep.includes('ai') || normalizedStep.includes('답변') || 
+        normalizedStep.includes('생성') || normalizedStep.includes('thinking') ||
+        normalizedStep.includes('작성')) return 'step-thinking';
+    
+    // 처리 중 단계
+    if (normalizedStep.includes('processing') || normalizedStep.includes('처리')) return 'step-processing';
+    
+    // 완료 단계
     if (normalizedStep.includes('complete') || normalizedStep.includes('완료')) return 'step-complete';
-    return '';
+    
+    // 기본값 - 진행 중으로 처리
+    console.log('⚠️ 매칭되지 않은 단계:', step);
+    return 'step-processing';
   };
 
   const getModelDisplayName = (model: string) => {
@@ -429,6 +538,19 @@ export const AIQuestionTab: React.FC = () => {
         {/* 진행 상황 표시 섹션 (개선됨) */}
         {(loading || progress) && (
           <div className="progress-section">
+            <div className="progress-header-controls">
+              <h4>🔄 AI 처리 중...</h4>
+              {loading && abortController && (
+                <button 
+                  onClick={abortSearch}
+                  className="abort-button"
+                  type="button"
+                >
+                  🛑 검색 중단
+                </button>
+              )}
+            </div>
+            
             <div className="current-progress">
               {progress && (
                 <div className="progress-item current">
@@ -451,19 +573,20 @@ export const AIQuestionTab: React.FC = () => {
               )}
             </div>
             
-            {/* 사고과정 히스토리 */}
+            {/* 사고과정 히스토리 - 가로형 체크박스 스타일 */}
             {progressHistory.length > 0 && (
-              <div className="progress-history">
+              <div className="progress-history horizontal">
                 <h4>🧠 AI 사고과정:</h4>
-                <div className="progress-steps">
+                <div className="progress-steps-horizontal">
                   {progressHistory.map((step, index) => (
-                    <div key={index} className={`progress-step-item ${getProgressStepClass(step.step)}`}>
-                      <div className="step-icon">✓</div>
-                      <div className="step-content">
-                        <div className="step-message">{step.message}</div>
-                        {step.details && <div className="step-details">{step.details}</div>}
+                    <div key={index} className={`progress-step-horizontal ${getProgressStepClass(step.step)}`}>
+                      <div className="step-checkbox">
+                        <div className="checkbox-mark">✓</div>
                       </div>
-                      <div className="step-time">{step.progress.toFixed(0)}%</div>
+                      <div className="step-label">
+                        <div className="step-title">{step.message}</div>
+                        <div className="step-percentage">{step.progress.toFixed(0)}%</div>
+                      </div>
                     </div>
                   ))}
                 </div>

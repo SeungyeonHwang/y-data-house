@@ -99,6 +99,34 @@ class SearchPipeline:
         else:
             return QueryType.SIMPLE
     
+    def _select_pipeline_mode(self, query_type: QueryType, query: str) -> str:
+        """조건부 파이프라인 모드 선택 (전문가 조언 반영)"""
+        
+        # 1. 경량 파이프라인: 간단한 FAQ, 사실형 질문
+        if query_type in [QueryType.SIMPLE, QueryType.FACTUAL]:
+            # 단순한 키워드 검색이나 사실 확인
+            if len(query) <= 30 and ('무엇' in query or '언제' in query or '얼마' in query):
+                return "lightweight"
+        
+        # 2. 종합 파이프라인: 복잡한 분석, 비교, 전략 질문
+        if query_type == QueryType.COMPLEX:
+            return "comprehensive"
+        
+        # 복잡한 키워드가 포함된 경우 종합 파이프라인
+        complex_keywords = ['비교', '차이점', '장단점', '분석', '평가', '추천', '전략', 
+                           '방법', '과정', '절차', '이유', '원인', '배경', '영향', 
+                           '미래', '전망', '예측', '고려사항', 'vs']
+        
+        if any(keyword in query for keyword in complex_keywords):
+            return "comprehensive"
+        
+        # 다중 질문이나 긴 질문
+        if len(query) > 60 or query.count('?') > 1 or query.count('？') > 1:
+            return "comprehensive"
+        
+        # 3. 표준 파이프라인: 나머지 (분석형, 중간 복잡도)
+        return "standard"
+    
     def _get_channel_collection(self, channel_name: str):
         """채널명으로 컬렉션 가져오기"""
         try:
@@ -183,6 +211,108 @@ class SearchPipeline:
         except Exception as e:
             print(f"⚠️ Query Rewriting 실패: {e}")
             return None
+
+    def _generate_fusion_queries(self, query: str, channel_name: str, num_queries: int = 4) -> List[str]:
+        """RAG-Fusion용 다중 변형 쿼리 생성 (3-5개)"""
+        try:
+            prompt = f"""당신은 {channel_name} 채널 전문 검색 전략가입니다.
+주어진 질문의 다양한 측면을 탐색하기 위해 {num_queries}개의 서로 다른 변형 질문을 생성하세요.
+
+원본 질문: {query}
+
+**생성 규칙:**
+1. 같은 의도를 다른 관점에서 표현
+2. 구체적인 키워드와 추상적인 개념 혼합
+3. 질문 길이와 스타일 다양화
+4. {channel_name} 채널 특성 반영
+
+{num_queries}개의 변형 질문을 한 줄씩 번호 없이 작성하세요:"""
+
+            start_time = time.time()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 다각도 질문 생성 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=200,
+                temperature=0.8  # 창의성을 위해 높은 temperature
+            )
+            
+            result = response.choices[0].message.content.strip()
+            generation_time = (time.time() - start_time) * 1000
+            
+            # 변형 쿼리들 파싱
+            fusion_queries = []
+            for line in result.split('\n'):
+                line = line.strip()
+                if line and not line.startswith(('1.', '2.', '3.', '4.', '5.')):
+                    # 번호 제거 후 정리
+                    clean_line = re.sub(r'^\d+[\.\)]\s*', '', line).strip()
+                    if clean_line and clean_line != query:  # 원본과 다른 경우만
+                        fusion_queries.append(clean_line)
+            
+            # 중복 제거 및 개수 조정
+            unique_queries = []
+            for q in fusion_queries:
+                if q not in unique_queries and len(unique_queries) < num_queries:
+                    unique_queries.append(q)
+            
+            print(f"🎯 RAG-Fusion 쿼리 생성 완료 ({generation_time:.1f}ms): {len(unique_queries)}개")
+            for i, fq in enumerate(unique_queries, 1):
+                print(f"  {i}. {fq}")
+                
+            return unique_queries
+            
+        except Exception as e:
+            print(f"⚠️ RAG-Fusion 쿼리 생성 실패: {e}")
+            return []
+    
+    def _reciprocal_rank_fusion(self, query_results: List[List[Dict]], k: int = 60) -> List[Dict]:
+        """Reciprocal Rank Fusion (RRF)으로 다중 검색 결과 병합"""
+        video_scores = {}
+        
+        for query_idx, results in enumerate(query_results):
+            for rank, doc in enumerate(results):
+                video_id = doc['video_id']
+                
+                # RRF 점수 계산: 1 / (k + rank)
+                rrf_score = 1.0 / (k + rank + 1)
+                
+                if video_id not in video_scores:
+                    video_scores[video_id] = {
+                        'doc': doc,
+                        'rrf_score': 0.0,
+                        'appearances': 0,
+                        'best_rank': rank + 1,
+                        'query_sources': []
+                    }
+                
+                video_scores[video_id]['rrf_score'] += rrf_score
+                video_scores[video_id]['appearances'] += 1
+                video_scores[video_id]['best_rank'] = min(video_scores[video_id]['best_rank'], rank + 1)
+                video_scores[video_id]['query_sources'].append(query_idx)
+        
+        # RRF 점수로 정렬
+        sorted_results = sorted(
+            video_scores.values(), 
+            key=lambda x: x['rrf_score'], 
+            reverse=True
+        )
+        
+        # 결과 포맷팅
+        fusion_results = []
+        for item in sorted_results:
+            doc = item['doc'].copy()
+            doc['rrf_score'] = item['rrf_score']
+            doc['fusion_appearances'] = item['appearances']
+            doc['best_rank'] = item['best_rank']
+            doc['search_method'] = 'rag_fusion'
+            fusion_results.append(doc)
+        
+        print(f"🔗 RRF 병합 완료: {len(fusion_results)}개 문서, 평균 출현: {sum(item['appearances'] for item in sorted_results) / len(sorted_results):.1f}회")
+        
+        return fusion_results
     
     def _vector_search(self, collection, query_text: str, n_results: int = 8) -> List[Dict]:
         """벡터 검색 실행"""
@@ -229,75 +359,86 @@ class SearchPipeline:
             results_count >= 5
         )
     
-    def _llm_rerank(self, query: str, candidates: List[Dict], channel_name: str) -> List[Dict]:
-        """LLM Re-Ranking (top 8 문서에만 적용, 400ms 예산)"""
+    def _cross_encoder_rerank(self, query: str, candidates: List[Dict], channel_name: str) -> List[Dict]:
+        """Cross-Encoder 정밀 Re-Ranking (전문가 조언: precision +12pt 향상)"""
         if not candidates:
             return []
         
         try:
             start_time = time.time()
             
-            # 후보 정보 구성 (간결하게)
-            candidate_info = []
-            for i, result in enumerate(candidates[:8]):  # top 8만
-                candidate_info.append(
-                    f"문서 {i+1}: {result['title']}\n"
-                    f"내용: {result['content'][:150]}...\n"
-                    f"유사도: {result['similarity']:.3f}"
-                )
+            # 각 후보에 대해 개별 정밀 점수 계산
+            scored_candidates = []
             
-            candidates_text = "\n---\n".join(candidate_info)
+            for i, candidate in enumerate(candidates[:6]):  # top-6로 제한 (전문가 조언)
+                title = candidate.get('title', 'Unknown')
+                content = candidate.get('content', '')[:300]  # 더 많은 컨텍스트
+                similarity = candidate.get('similarity', 0.0)
+                
+                # Cross-Encoder 스타일 정밀 점수 요청
+                scoring_prompt = f"""질문-문서 관련성을 정밀 평가하세요.
+
+질문: "{query}"
+
+문서:
+제목: {title}
+내용: {content}
+벡터 유사도: {similarity:.3f}
+
+**평가 기준:**
+1. 질문 핵심 의도와 문서 내용 일치도
+2. 구체적 답변 제공 능력
+3. {channel_name} 채널 맥락 적합성
+4. 정보 완성도와 신뢰성
+
+0.0~1.0 사이 정밀 점수만 출력 (예: 0.85)"""
+
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": f"정밀한 Cross-Encoder입니다. {channel_name} 채널 전문성을 가지고 객관적으로 평가하세요."},
+                            {"role": "user", "content": scoring_prompt}
+                        ],
+                        max_tokens=8,
+                        temperature=0.1  # 일관성 우선
+                    )
+                    
+                    # 점수 추출 및 검증
+                    score_text = response.choices[0].message.content.strip()
+                    try:
+                        cross_score = float(score_text)
+                        cross_score = max(0.0, min(1.0, cross_score))  # 범위 제한
+                    except ValueError:
+                        cross_score = similarity  # fallback
+                    
+                except Exception as e:
+                    print(f"⚠️ Cross-Encoder 점수 계산 실패 ({i+1}번): {e}")
+                    cross_score = similarity
+                
+                # 하이브리드 점수: Cross-Encoder(75%) + Vector(25%)
+                final_score = cross_score * 0.75 + similarity * 0.25
+                
+                candidate_scored = candidate.copy()
+                candidate_scored['cross_encoder_score'] = cross_score
+                candidate_scored['final_rerank_score'] = final_score
+                candidate_scored['rank_score'] = final_score
+                
+                scored_candidates.append(candidate_scored)
+                print(f"  📊 문서 {i+1}: vec={similarity:.3f} → cross={cross_score:.3f} → final={final_score:.3f}")
             
-            prompt = f"""당신은 {channel_name} 채널 전문 문서 관련성 평가자입니다. 
-사용자 질문에 가장 도움이 될 문서들을 선별해주세요.
-
-질문: {query}
-
-후보 문서들:
-{candidates_text}
-
-가장 관련성 높은 문서 번호를 우선순위대로 나열하세요. (예: 1,3,5,2)
-최대 5개까지 선택하세요."""
-
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": f"당신은 {channel_name} 채널 전문 문서 관련성 평가자입니다."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=50,
-                temperature=0.1
-            )
+            # 최종 점수로 정렬
+            reranked = sorted(scored_candidates, key=lambda x: x['final_rerank_score'], reverse=True)
             
             rerank_time = (time.time() - start_time) * 1000
+            print(f"🎯 Cross-Encoder Re-rank 완료 ({rerank_time:.1f}ms): top-{len(reranked)}개 정밀 재평가")
             
-            selection = response.choices[0].message.content.strip()
-            print(f"🤖 LLM Re-rank 완료 ({rerank_time:.1f}ms): {selection}")
-            
-            # 선택된 인덱스 파싱
-            try:
-                selected_indices = [int(x.strip()) - 1 for x in selection.replace(' ', '').split(',') if x.strip().isdigit()]
-                reranked = []
-                
-                for i, idx in enumerate(selected_indices):
-                    if 0 <= idx < len(candidates):
-                        doc = candidates[idx].copy()
-                        doc['rank_score'] = 1.0 - (i * 0.1)  # 순위 점수
-                        reranked.append(doc)
-                
-                if len(reranked) >= 2:
-                    return reranked
-                else:
-                    # fallback: 유사도 기반
-                    return [r for r in candidates if r['similarity'] > 0.3][:5]
-                    
-            except Exception:
-                print("⚠️ Re-rank 결과 파싱 실패, 유사도 기반 fallback")
-                return [r for r in candidates if r['similarity'] > 0.3][:5]
+            return reranked
                 
         except Exception as e:
-            print(f"⚠️ LLM Re-ranking 실패: {e}")
-            return [r for r in candidates if r['similarity'] > 0.3][:5]
+            print(f"⚠️ Cross-Encoder Re-ranking 실패: {e}")
+            # fallback: 벡터 유사도 기반 정렬
+            return sorted(candidates, key=lambda x: x['similarity'], reverse=True)[:6]
     
     def _merge_and_deduplicate(self, all_results: List[List[Dict]], search_methods: List[str]) -> List[Dict]:
         """검색 결과 병합 및 중복 제거"""
@@ -338,48 +479,114 @@ class SearchPipeline:
                 rerank_used=False
             )
         
-        # 2. 쿼리 복잡도 분류
+        # 2. 쿼리 복잡도 분류 및 조건부 파이프라인 결정
         query_type = self._classify_query_complexity(search_query.original_query)
-        print(f"📊 쿼리 타입: {query_type.value}")
+        pipeline_mode = self._select_pipeline_mode(query_type, search_query.original_query)
+        print(f"📊 쿼리 타입: {query_type.value} → 파이프라인: {pipeline_mode}")
         
         all_results = []
         search_methods = []
         
-        # 3. 원본 쿼리 검색 (항상 실행)
+        # 3. 원본 쿼리 검색 (모든 파이프라인에서 실행)
         print("📝 1단계: 원본 쿼리 검색")
         original_results = self._vector_search(collection, search_query.original_query, config.max_results)
         if original_results:
             all_results.append(original_results)
             search_methods.append("original")
         
-        # 4. HyDE 검색 (활성화된 경우)
+        # 4. 조건부 고급 검색 기법 적용
         hyde_used = False
-        if config.enable_hyde:
-            print("🎯 2단계: HyDE 검색")
-            hyde_doc = self._generate_hyde_document(search_query.original_query, search_query.channel_name)
-            if hyde_doc:
-                search_query.hyde_document = hyde_doc
-                hyde_results = self._vector_search(collection, hyde_doc, config.max_results)
-                if hyde_results:
-                    all_results.append(hyde_results)
-                    search_methods.append("hyde")
-                    hyde_used = True
-        
-        # 5. Query Rewriting 검색 (활성화된 경우)
+        fusion_used = False
         rewrite_used = False
-        if config.enable_rewrite and all_results:
-            print("🔄 3단계: Query Rewriting 검색")
-            context = all_results[0][0]['content'] if all_results[0] else ""
-            rewritten_query = self._rewrite_query(search_query.original_query, search_query.channel_name, context)
-            if rewritten_query and rewritten_query != search_query.original_query:
-                search_query.rewritten_query = rewritten_query
-                rewrite_results = self._vector_search(collection, rewritten_query, config.max_results)
-                if rewrite_results:
-                    all_results.append(rewrite_results)
-                    search_methods.append("rewritten")
-                    rewrite_used = True
         
-        # 6. 결과 병합 및 중복 제거
+        if pipeline_mode == "lightweight":
+            # 경량 파이프라인: 간단한 FAQ, 사실형 질문
+            print("⚡ 경량 파이프라인: 벡터 검색만 수행")
+            
+        elif pipeline_mode == "standard":
+            # 표준 파이프라인: HyDE + Query Rewriting
+            print("🔄 표준 파이프라인: HyDE + 쿼리 재작성")
+            
+            # HyDE 검색
+            if config.enable_hyde:
+                print("🎯 2단계: HyDE 검색")
+                hyde_doc = self._generate_hyde_document(search_query.original_query, search_query.channel_name)
+                if hyde_doc:
+                    search_query.hyde_document = hyde_doc
+                    hyde_results = self._vector_search(collection, hyde_doc, config.max_results)
+                    if hyde_results:
+                        all_results.append(hyde_results)
+                        search_methods.append("hyde")
+                        hyde_used = True
+            
+            # Query Rewriting
+            if config.enable_rewrite and all_results:
+                print("🔄 3단계: Query Rewriting 검색")
+                context = all_results[0][0]['content'] if all_results[0] else ""
+                rewritten_query = self._rewrite_query(search_query.original_query, search_query.channel_name, context)
+                if rewritten_query and rewritten_query != search_query.original_query:
+                    search_query.rewritten_query = rewritten_query
+                    rewrite_results = self._vector_search(collection, rewritten_query, config.max_results)
+                    if rewrite_results:
+                        all_results.append(rewrite_results)
+                        search_methods.append("rewritten")
+                        rewrite_used = True
+                        
+        elif pipeline_mode == "comprehensive":
+            # 종합 파이프라인: 모든 기법 활용
+            print("🚀 종합 파이프라인: 전체 스택 활용")
+            
+            # HyDE 검색
+            if config.enable_hyde:
+                print("🎯 2단계: HyDE 검색")
+                hyde_doc = self._generate_hyde_document(search_query.original_query, search_query.channel_name)
+                if hyde_doc:
+                    search_query.hyde_document = hyde_doc
+                    hyde_results = self._vector_search(collection, hyde_doc, config.max_results)
+                    if hyde_results:
+                        all_results.append(hyde_results)
+                        search_methods.append("hyde")
+                        hyde_used = True
+            
+            # RAG-Fusion 검색 (복잡한 질문에만)
+            if config.enable_rag_fusion:
+                print(f"🎯 3단계: RAG-Fusion 다중 쿼리 검색 ({config.rag_fusion_queries}개)")
+                fusion_queries = self._generate_fusion_queries(
+                    search_query.original_query, 
+                    search_query.channel_name, 
+                    config.rag_fusion_queries
+                )
+                
+                if fusion_queries:
+                    fusion_results_list = []
+                    for i, fq in enumerate(fusion_queries):
+                        print(f"  검색 중: {fq[:50]}...")
+                        fq_results = self._vector_search(collection, fq, config.max_results)
+                        if fq_results:
+                            fusion_results_list.append(fq_results)
+                    
+                    if fusion_results_list:
+                        # RRF로 병합
+                        rrf_results = self._reciprocal_rank_fusion(fusion_results_list)
+                        if rrf_results:
+                            all_results.append(rrf_results)
+                            search_methods.append("rag_fusion")
+                            fusion_used = True
+            
+            # Query Rewriting
+            if config.enable_rewrite and all_results:
+                print("🔄 4단계: Query Rewriting 검색")
+                context = all_results[0][0]['content'] if all_results[0] else ""
+                rewritten_query = self._rewrite_query(search_query.original_query, search_query.channel_name, context)
+                if rewritten_query and rewritten_query != search_query.original_query:
+                    search_query.rewritten_query = rewritten_query
+                    rewrite_results = self._vector_search(collection, rewritten_query, config.max_results)
+                    if rewrite_results:
+                        all_results.append(rewrite_results)
+                        search_methods.append("rewritten")
+                        rewrite_used = True
+        
+        # 7. 결과 병합 및 중복 제거
         if not all_results:
             search_time_ms = (time.time() - start_time) * 1000
             return SearchResult(
@@ -389,28 +596,46 @@ class SearchPipeline:
                 total_found=0,
                 search_time_ms=search_time_ms,
                 hyde_used=hyde_used,
+                fusion_used=fusion_used,
                 rewrite_used=rewrite_used,
                 rerank_used=False
             )
         
         merged_results = self._merge_and_deduplicate(all_results, search_methods)
         
-        # 7. 조건부 Re-ranking
-        rerank_used = False
-        final_results = merged_results
+        # 8. 2층 유사도 필터링 - 전문가 조언 반영
+        # 1차 필터: recall 최적화 (낮은 threshold)
+        first_filter = [r for r in merged_results if r['similarity'] > config.similarity_threshold]
+        print(f"🔍 1차 필터 (recall={config.similarity_threshold}): {len(merged_results)} → {len(first_filter)}개")
         
-        if config.enable_rerank and self._should_use_rerank(query_type, len(merged_results)):
-            print("🤖 4단계: LLM Re-ranking (조건부)")
-            reranked_results = self._llm_rerank(search_query.original_query, merged_results, search_query.channel_name)
+        # 9. 조건부 Cross-Encoder Re-ranking (전문가 조언 반영)
+        rerank_used = False
+        final_results = first_filter
+        
+        if config.enable_rerank and self._should_use_rerank(query_type, len(first_filter)):
+            print(f"🎯 5단계: Cross-Encoder Re-ranking (top-{config.rerank_top_k})")
+            # Re-ranking용 후보: 12개에서 top-6 선별 (전문가 조언: precision +12pt)
+            rerank_candidates = first_filter[:12]  # 더 많은 후보에서 선별
+            reranked_results = self._cross_encoder_rerank(search_query.original_query, rerank_candidates, search_query.channel_name)
             if reranked_results:
-                final_results = reranked_results
+                final_results = reranked_results[:config.rerank_top_k]  # top-k로 제한
                 rerank_used = True
         
-        # 8. 유사도 임계값 필터링
-        filtered_results = [r for r in final_results if r['similarity'] > config.similarity_threshold]
-        final_documents = filtered_results[:config.max_results]
+        # 10. 2차 필터링: 정밀도 최적화 (높은 threshold) - Re-rank 후 적용
+        if rerank_used:
+            # Re-rank된 결과는 이미 품질이 검증되었으므로 precision_threshold 적용 안 함
+            precision_filtered = final_results
+        else:
+            # Re-rank 없는 경우만 precision threshold 적용
+            precision_filtered = [r for r in final_results if r['similarity'] > config.precision_threshold]
+            print(f"🎯 2차 필터 (precision={config.precision_threshold}): {len(final_results)} → {len(precision_filtered)}개")
+            final_results = precision_filtered
         
-        # 9. SearchDocument 객체로 변환
+        # 11. 최종 결과 개수 제한 (전문가 조언: top-6 최적)
+        display_limit = min(6, config.rerank_top_k if rerank_used else config.max_results)
+        final_documents = final_results[:display_limit]
+        
+        # 12. SearchDocument 객체로 변환
         search_documents = []
         for doc in final_documents:
             search_documents.append(SearchDocument(
@@ -425,7 +650,15 @@ class SearchPipeline:
         
         search_time_ms = (time.time() - start_time) * 1000
         
-        print(f"✅ 검색 완료 ({search_time_ms:.1f}ms): {len(search_documents)}개 문서")
+        # 결과 요약 출력
+        used_methods = []
+        if hyde_used: used_methods.append("HyDE")
+        if fusion_used: used_methods.append("RAG-Fusion")
+        if rewrite_used: used_methods.append("Rewrite")
+        if rerank_used: used_methods.append("Re-rank")
+        
+        methods_str = " + ".join(used_methods) if used_methods else "기본"
+        print(f"✅ 검색 완료 ({search_time_ms:.1f}ms): {len(search_documents)}개 문서 [{methods_str}]")
         
         return SearchResult(
             query_id=search_query.query_id,
@@ -434,6 +667,7 @@ class SearchPipeline:
             total_found=len(merged_results),
             search_time_ms=search_time_ms,
             hyde_used=hyde_used,
+            fusion_used=fusion_used,
             rewrite_used=rewrite_used,
             rerank_used=rerank_used
         ) 

@@ -386,7 +386,7 @@ class RAGController:
                 )
                 
                 fallback_config = SearchConfig(
-                    max_results=6,  # 3개 → 6개로 증가
+                    max_results=5,  # 전문가 조언: 4-5개가 choice overload 방지
                     enable_hyde=False,
                     enable_rewrite=False, 
                     enable_rerank=False,

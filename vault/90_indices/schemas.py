@@ -44,24 +44,29 @@ class SearchQuery(BaseModel):
     expansion_terms: List[str] = Field(default_factory=list, description="확장 키워드")
 
 class SearchConfig(BaseModel):
-    """검색 설정"""
-    max_results: int = Field(default=8, description="최대 결과 수")  # 5개 → 8개로 증가
+    """검색 설정 - 전문가 조언 반영 버전"""
+    max_results: int = Field(default=12, description="벡터 검색 최대 결과 수 (12→top-6 re-rank)")
+    similarity_threshold: float = Field(default=0.20, description="1차 필터 유사도 임계값 (하이-리콜)")
+    precision_threshold: float = Field(default=0.30, description="2차 필터 정밀도 임계값 (고-정밀)")
     enable_hyde: bool = Field(default=True, description="HyDE 활성화")
     enable_rewrite: bool = Field(default=True, description="Query Rewriting 활성화")
     enable_rerank: bool = Field(default=True, description="Re-ranking 활성화")
-    rerank_threshold: float = Field(default=0.3, description="Re-rank 임계값")
-    similarity_threshold: float = Field(default=0.25, description="유사도 임계값")
+    enable_rag_fusion: bool = Field(default=True, description="RAG-Fusion 다중 쿼리 활성화")
+    rag_fusion_queries: int = Field(default=4, description="RAG-Fusion 생성 쿼리 수 (3-5개 최적)")
+    rerank_threshold: float = Field(default=0.3, description="Re-rank 활성화 임계값")
+    rerank_top_k: int = Field(default=6, description="Re-ranking 대상 문서 수 (6개 최적)")
 
 class SearchResult(BaseModel):
-    """검색 결과"""
+    """검색 결과 - RAG-Fusion 지원"""
     query_id: str = Field(..., description="쿼리 ID")
     channel_name: str = Field(..., description="채널명")
     documents: List[SearchDocument] = Field(..., description="검색된 문서들")
     total_found: int = Field(..., description="총 발견된 문서 수")
     search_time_ms: float = Field(..., description="검색 소요 시간(ms)")
     
-    # 검색 단계별 정보
+    # 검색 단계별 정보 - 전문가 조언 반영
     hyde_used: bool = Field(default=False, description="HyDE 사용 여부")
+    fusion_used: bool = Field(default=False, description="RAG-Fusion 다중 쿼리 사용 여부")
     rewrite_used: bool = Field(default=False, description="Query Rewrite 사용 여부")
     rerank_used: bool = Field(default=False, description="Re-ranking 사용 여부")
     cache_hit: bool = Field(default=False, description="캐시 히트 여부")
@@ -78,14 +83,17 @@ class AnswerStyle(str, Enum):
     ANALYTICAL = "analytical"           # 분석형
 
 class AnswerConfig(BaseModel):
-    """답변 생성 설정"""
+    """답변 생성 설정 - 전문가 조언 반영"""
     style: AnswerStyle = Field(default=AnswerStyle.BULLET_POINTS, description="답변 스타일")
     max_bullets: int = Field(default=5, description="최대 불릿 수")
     include_sources: bool = Field(default=True, description="출처 포함 여부")
     enable_self_refine: bool = Field(default=True, description="Self-Refine 활성화")
     enable_react: bool = Field(default=False, description="ReAct 패턴 활성화")
-    max_tokens: int = Field(default=800, description="최대 토큰 수")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="생성 온도")
+    max_tokens: int = Field(default=650, description="최대 토큰 수 (600-750 최적)")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="기본 생성 온도")
+    enable_adaptive_temperature: bool = Field(default=True, description="적응형 Temperature 활성화")
+    factual_temperature: float = Field(default=0.4, description="사실형 질문 온도")
+    analytical_temperature: float = Field(default=0.65, description="분석형 질문 온도")
 
 class ChannelPrompt(BaseModel):
     """채널별 프롬프트 정보 (경량화)"""

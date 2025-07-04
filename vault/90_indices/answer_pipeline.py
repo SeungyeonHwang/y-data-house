@@ -65,7 +65,81 @@ class AnswerPipeline:
             "summary": "string - 한 줄 요약"
         }
         
-        print("💬 Answer Pipeline 초기화 완료")
+        # 적응형 Temperature용 질문 분류 패턴
+        self.factual_patterns = [
+            r'\b(언제|몇|얼마|어디|누가|무엇|어느|몇개|몇명)\b',  # 5W1H 질문
+            r'\b(가격|비용|요금|수치|통계|날짜|시간|주소|위치)\b',  # 구체적 수치/위치
+            r'\b(정의|의미|뜻|개념|용어)\b',                      # 정의 관련
+            r'\b(사실|확인|맞나|진짜|정말)\b',                    # 사실 확인
+        ]
+        
+        self.analytical_patterns = [
+            r'\b(왜|이유|원인|배경|근거|까닭)\b',                 # 인과관계
+            r'\b(어떻게|방법|방식|과정|절차|단계)\b',              # 방법/절차
+            r'\b(비교|차이|장단점|vs|대비|어떤.*좋)\b',           # 비교분석
+            r'\b(전략|계획|방향|방침|정책)\b',                    # 전략적 사고
+            r'\b(평가|분석|검토|고려|판단)\b',                    # 분석적 사고
+            r'\b(미래|전망|예측|예상|앞으로)\b',                  # 예측/전망
+            r'\b(추천|권장|제안|추천.*방법)\b',                   # 추천/제안
+        ]
+        
+        print("💬 Answer Pipeline 초기화 완료 (적응형 Temperature 지원)")
+    
+    def _classify_question_type(self, query: str) -> str:
+        """질문 유형 분류 - 사실형 vs 분석형 (전문가 조언 기반)"""
+        import re
+        
+        query_lower = query.lower()
+        
+        # 사실형 패턴 점수 계산
+        factual_score = 0
+        for pattern in self.factual_patterns:
+            if re.search(pattern, query_lower):
+                factual_score += 1
+        
+        # 분석형 패턴 점수 계산
+        analytical_score = 0
+        for pattern in self.analytical_patterns:
+            if re.search(pattern, query_lower):
+                analytical_score += 1
+        
+        # 길이 기반 추가 점수 (짧은 질문 = 사실형 경향)
+        if len(query) <= 20:
+            factual_score += 0.5
+        elif len(query) >= 50:
+            analytical_score += 0.5
+        
+        # 질문 복잡도 (복수 질문 = 분석형)
+        if query.count('?') > 1 or query.count('？') > 1:
+            analytical_score += 1
+        
+        # 결과 판정
+        if factual_score > analytical_score:
+            return "factual"
+        elif analytical_score > factual_score:
+            return "analytical"
+        else:
+            # 동점인 경우 질문 길이와 구조로 판단
+            if len(query) <= 30 and ('무엇' in query or '언제' in query or '어디' in query):
+                return "factual"
+            else:
+                return "analytical"
+    
+    def _get_adaptive_temperature(self, query: str, config: AnswerConfig) -> float:
+        """적응형 Temperature 계산 (전문가 조언: 사실형 0.4, 분석형 0.65)"""
+        if not config.enable_adaptive_temperature:
+            return config.temperature
+        
+        question_type = self._classify_question_type(query)
+        
+        if question_type == "factual":
+            temperature = config.factual_temperature
+            print(f"🎯 사실형 질문 감지 → Temperature: {temperature}")
+        else:
+            temperature = config.analytical_temperature
+            print(f"🧠 분석형 질문 감지 → Temperature: {temperature}")
+        
+        return temperature
     
     def _load_channel_prompt(self, channel_name: str) -> ChannelPrompt:
         """채널별 경량 프롬프트 로드"""
@@ -100,7 +174,7 @@ class AnswerPipeline:
             return "검색된 문서가 없습니다."
         
         context_parts = []
-        for i, doc in enumerate(search_result.documents[:8]):  # 최대 8개로 증가
+        for i, doc in enumerate(search_result.documents[:6]):  # 전문가 조언: top-6 chunk × 최대 800 tok가 LLM-window 최적
             # 비디오 ID와 제목을 명확하게 표시
             context_part = f"""
 📺 **영상 {i+1}** (ID: {doc.video_id})
@@ -368,7 +442,7 @@ Final Answer: 다음 단계 결정
             return "현재 정보로 충분합니다."
     
     def _generate_initial_answer(self, request: AnswerRequest) -> str:
-        """초기 답변 생성 (강화된 JSON 생성)"""
+        """초기 답변 생성 (적응형 Temperature 적용)"""
         # 채널별 경량 프롬프트 로드
         channel_prompt = request.channel_prompt or self._load_channel_prompt(request.search_result.channel_name)
         
@@ -381,6 +455,9 @@ Final Answer: 다음 단계 결정
         
         # JSON 스키마 지시사항
         json_instruction = self._get_json_schema_instruction(request.config)
+        
+        # 적응형 Temperature 계산 (전문가 조언 반영)
+        adaptive_temp = self._get_adaptive_temperature(request.original_query, request.config)
         
         # 경량 프롬프트 구성
         system_message = f"{channel_prompt.system_prompt} {channel_prompt.tone}으로 답변하세요."
@@ -414,13 +491,13 @@ Final Answer: 다음 단계 결정
                     {"role": "user", "content": user_prompt}
                 ],
                 max_tokens=request.config.max_tokens,
-                temperature=request.config.temperature
+                temperature=adaptive_temp  # 적응형 Temperature 적용
             )
             
             generation_time = (time.time() - start_time) * 1000
             initial_answer = response.choices[0].message.content.strip()
             
-            print(f"📝 초기 답변 생성 완료 ({generation_time:.1f}ms)")
+            print(f"📝 초기 답변 생성 완료 ({generation_time:.1f}ms, temp={adaptive_temp})")
             return initial_answer
             
         except Exception as e:
@@ -532,9 +609,9 @@ Final Answer: 다음 단계 결정
         except Exception as e:
             print(f"⚠️ 소스 추출 오류: {e}")
         
-        # 소스가 비어있으면 검색된 영상들 포함
+        # 소스가 비어있으면 검색된 영상들 포함 (전문가 조언: 4-5개 최적)
         if not sources_used:
-            sources_used = [doc.video_id for doc in request.search_result.documents[:6]]  # 3개 → 6개로 증가
+            sources_used = [doc.video_id for doc in request.search_result.documents[:5]]  # Choice Overload 방지
         
         generation_time = (time.time() - start_time) * 1000
         

@@ -1227,6 +1227,45 @@
   box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 
+.progress-header-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.progress-header-controls h4 {
+  margin: 0;
+  color: #ecf0f1;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.abort-button {
+  background: linear-gradient(135deg, #e74c3c, #c0392b);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.abort-button:hover {
+  background: linear-gradient(135deg, #c0392b, #a93226);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+}
+
+.abort-button:active {
+  transform: translateY(0);
+}
+
 .current-progress .progress-item {
   margin-bottom: 1rem;
 }
@@ -1366,6 +1405,172 @@
 .step-thinking .step-icon { background: #ffc107; }
 .step-processing .step-icon { background: #6f42c1; }
 .step-complete .step-icon { background: #28a745; }
+
+/* 가로형 체크박스 스타일 진행률 표시 */
+.progress-history.horizontal {
+  background: #2c3e50;
+  border: 1px solid #34495e;
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 16px;
+}
+
+.progress-history.horizontal h4 {
+  margin: 0 0 16px 0;
+  color: #ecf0f1;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.progress-steps-horizontal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.progress-step-horizontal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #34495e;
+  border: 2px solid #4a5f7a;
+  border-radius: 8px;
+  padding: 8px 12px;
+  transition: all 0.3s ease;
+  min-width: 140px;
+  opacity: 0.7;
+}
+
+.progress-step-horizontal.step-complete {
+  background: #27ae60;
+  border-color: #2ecc71;
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(46, 204, 113, 0.3);
+}
+
+.progress-step-horizontal.step-processing {
+  background: #9b59b6;
+  border-color: #af7ac5;
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(155, 89, 182, 0.3);
+}
+
+.progress-step-horizontal.step-search {
+  background: #3498db;
+  border-color: #5dade2;
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+}
+
+.progress-step-horizontal.step-hyde {
+  background: #8e44ad;
+  border-color: #a569bd;
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(142, 68, 173, 0.3);
+}
+
+.progress-step-horizontal.step-context {
+  background: #1abc9c;
+  border-color: #48c9b0;
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(26, 188, 156, 0.3);
+}
+
+.progress-step-horizontal.step-thinking {
+  background: #f39c12;
+  border-color: #f8c471;
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(243, 156, 18, 0.3);
+}
+
+.step-checkbox {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #ecf0f1;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+}
+
+.progress-step-horizontal.step-complete .step-checkbox {
+  background: #2ecc71;
+  border-color: #2ecc71;
+}
+
+.progress-step-horizontal.step-processing .step-checkbox {
+  background: #af7ac5;
+  border-color: #af7ac5;
+  animation: pulse 1.5s infinite;
+}
+
+.checkbox-mark {
+  color: #fff;
+  font-size: 12px;
+  font-weight: bold;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.progress-step-horizontal.step-complete .checkbox-mark,
+.progress-step-horizontal.step-processing .checkbox-mark {
+  opacity: 1;
+}
+
+.step-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-title {
+  color: #ecf0f1;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.step-percentage {
+  color: #bdc3c7;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.8;
+  }
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  .progress-steps-horizontal {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .progress-step-horizontal {
+    min-width: auto;
+    justify-content: flex-start;
+  }
+  
+  .step-title {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: initial;
+  }
+}
 
 /* 세션 저장 안내 - Dark Mode */
 .session-info {
