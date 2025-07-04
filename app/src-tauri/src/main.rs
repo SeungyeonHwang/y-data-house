@@ -1776,19 +1776,25 @@ fn sanitize_channel_name(name: &str) -> String {
     result.trim_matches('_').chars().take(50).collect()
 }
 
-// 채널별 자동 프롬프트 생성
+// 채널별 제로샷 AI 프롬프트 생성
 #[command]
 async fn auto_generate_channel_prompt(channel_name: String) -> Result<u32, String> {
     let project_root = get_project_root();
     let auto_prompt_script = project_root.join("vault").join("90_indices").join("auto_prompt.py");
     
     if !auto_prompt_script.exists() {
-        return Err("자동 프롬프트 생성 스크립트를 찾을 수 없습니다".to_string());
+        return Err("제로샷 AI 프롬프트 생성 스크립트를 찾을 수 없습니다".to_string());
     }
     
     let venv_python = project_root.join("venv").join("bin").join("python");
+    let args = vec![
+        auto_prompt_script.to_str().unwrap(), 
+        "generate", 
+        &channel_name
+    ];
+    
     let output = Command::new(&venv_python)
-        .args(&[auto_prompt_script.to_str().unwrap(), "generate", &channel_name])
+        .args(&args)
         .current_dir(&project_root)
         .output()
         .map_err(|e| e.to_string())?;
@@ -1807,7 +1813,7 @@ async fn auto_generate_channel_prompt(channel_name: String) -> Result<u32, Strin
         Ok(1) // 기본값
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("자동 프롬프트 생성 실패: {}", stderr))
+        Err(format!("제로샷 AI 프롬프트 생성 실패: {}", stderr))
     }
 }
 

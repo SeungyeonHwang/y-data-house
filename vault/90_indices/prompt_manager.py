@@ -11,6 +11,7 @@ from datetime import datetime
 import re
 from dotenv import load_dotenv
 from channel_analyzer import ChannelAnalyzer
+from zero_shot_prompt_generator import ZeroShotPromptGenerator
 
 # 환경변수 로드
 load_dotenv()
@@ -30,6 +31,16 @@ class PromptManager:
         except Exception as e:
             print(f"⚠️ ChannelAnalyzer 초기화 실패: {e}")
             self.analyzer = None
+        
+        # 제로샷 프롬프트 생성기 초기화
+        try:
+            self.zero_shot_generator = ZeroShotPromptGenerator(
+                chroma_path or Path(__file__).parent / "chroma",
+                model="deepseek-chat"
+            )
+        except Exception as e:
+            print(f"⚠️ ZeroShotPromptGenerator 초기화 실패: {e}")
+            self.zero_shot_generator = None
         
         print(f"✅ PromptManager 초기화 완료: {self.prompts_dir}")
     
@@ -76,38 +87,71 @@ class PromptManager:
         print(f"📂 {channel_name} 프롬프트 파일 없음, 기본 프롬프트 반환")
         return self._get_default_prompt()
     
-    def save_channel_prompt(self, channel_name: str, prompt_data: Dict) -> int:
-        """새 프롬프트 버전 저장"""
+    def save_channel_prompt(self, channel_name: str, prompt_data: Dict, keep_old_versions: bool = False) -> int:
+        """새 프롬프트 버전 저장 (기존 버전 자동 정리)"""
         safe_name = self.sanitize_channel_name(channel_name)
         channel_dir = self.prompts_dir / safe_name
         channel_dir.mkdir(exist_ok=True)
         
-        # 새 버전 번호 계산
+        # 기존 버전들 조회
         existing_versions = [
             int(f.stem.split('_v')[1]) 
             for f in channel_dir.glob("prompt_v*.json")
             if f.stem.split('_v')[1].isdigit()
         ]
+        
+        # 새 버전 번호 계산
         new_version = max(existing_versions, default=0) + 1
         
+        # **새로운 기능**: 기존 버전 자동 삭제 (keep_old_versions=False인 경우)
+        if not keep_old_versions and existing_versions:
+            print(f"🧹 {channel_name} 채널의 기존 프롬프트 버전 정리 중...")
+            deleted_count = 0
+            for old_version in existing_versions:
+                old_file = channel_dir / f"prompt_v{old_version}.json"
+                try:
+                    if old_file.exists():
+                        old_file.unlink()
+                        deleted_count += 1
+                        print(f"   🗑️ v{old_version} 삭제됨")
+                except Exception as e:
+                    print(f"   ⚠️ v{old_version} 삭제 실패: {e}")
+            
+            if deleted_count > 0:
+                print(f"✅ 기존 {deleted_count}개 버전 정리 완료")
+        
+        # 새 버전 생성 시 항상 v1부터 시작 (기존 버전 삭제했으므로)
+        final_version = 1 if not keep_old_versions else new_version
+        
         # 프롬프트 메타데이터 업데이트
-        prompt_data['version'] = new_version
+        prompt_data['version'] = final_version
         prompt_data['channel_name'] = channel_name
         prompt_data['created_at'] = datetime.now().isoformat()
         prompt_data['last_modified'] = datetime.now().isoformat()
         
+        # 새 아키텍처 표시 (Prompt-Light 버전임을 명시)
+        if not prompt_data.get('architecture'):
+            prompt_data['architecture'] = 'search_first_prompt_light'
+        
         # 프롬프트 저장
-        prompt_file = channel_dir / f"prompt_v{new_version}.json"
+        prompt_file = channel_dir / f"prompt_v{final_version}.json"
         try:
             with open(prompt_file, 'w', encoding='utf-8') as f:
                 json.dump(prompt_data, f, ensure_ascii=False, indent=2)
             
             # 활성 버전 업데이트
             active_file = channel_dir / "active.txt"
-            active_file.write_text(str(new_version))
+            active_file.write_text(str(final_version))
             
-            print(f"✅ {channel_name} 프롬프트 v{new_version} 저장 완료")
-            return new_version
+            print(f"✅ {channel_name} 프롬프트 v{final_version} 저장 완료")
+            
+            # 새로운 아키텍처 정보 표시
+            if prompt_data.get('architecture') == 'search_first_prompt_light':
+                print(f"🚀 Prompt-Light 아키텍처 적용됨")
+                if prompt_data.get('generation_method') in ['prompt_light_ai', 'prompt_light_fallback']:
+                    print(f"🤖 새로운 경량 프롬프트 생성 방식 사용")
+            
+            return final_version
             
         except Exception as e:
             print(f"❌ 프롬프트 저장 실패: {e}")
@@ -140,33 +184,38 @@ class PromptManager:
         return sorted(versions, key=lambda x: x['version'], reverse=True)
     
     def auto_generate_channel_prompt(self, channel_name: str) -> int:
-        """채널 벡터 데이터를 분석하여 자동으로 프롬프트 생성"""
-        if not self.analyzer:
-            print("❌ ChannelAnalyzer가 초기화되지 않았습니다.")
+        """채널 벡터 데이터를 분석하여 제로샷 AI 프롬프트 생성
+        
+        Args:
+            channel_name: 채널명
+        """
+        return self._zero_shot_generate_prompt(channel_name)
+    
+
+    
+    def _zero_shot_generate_prompt(self, channel_name: str) -> int:
+        """제로샷 AI 기반 프롬프트 생성"""
+        if not self.zero_shot_generator:
+            print("❌ ZeroShotPromptGenerator가 초기화되지 않았습니다.")
+            print("💡 DeepSeek API 키 설정을 확인해주세요.")
             return 0
         
-        print(f"🔍 {channel_name} 채널 벡터 데이터 분석 중...")
+        print(f"🤖 {channel_name} 채널 제로샷 AI 프롬프트 생성 중...")
         
-        # 1. 채널 벡터 데이터 분석
-        channel_analysis = self.analyzer.analyze_channel_content(channel_name)
-        if not channel_analysis:
-            print(f"❌ {channel_name} 채널의 벡터 데이터를 찾을 수 없습니다.")
+        # 1. 제로샷 프롬프트 생성
+        prompt_data = self.zero_shot_generator.generate_channel_prompt(channel_name)
+        if not prompt_data:
+            print(f"❌ {channel_name} 채널 제로샷 프롬프트 생성 실패")
             return 0
         
-        print(f"📊 분석 완료: {channel_analysis['total_videos']}개 영상, {channel_analysis['total_documents']}개 문서 분석")
-        print(f"🔑 주요 키워드: {', '.join(list(channel_analysis['keywords'].keys())[:5])}")
-        
-        # 2. 자동 프롬프트 생성
-        auto_prompt = self.analyzer.generate_auto_prompt(channel_analysis)
-        
-        # 3. 프롬프트 저장
-        new_version = self.save_channel_prompt(channel_name, auto_prompt)
+        # 2. 프롬프트 저장
+        new_version = self.save_channel_prompt(channel_name, prompt_data)
         
         if new_version > 0:
-            print(f"✅ {channel_name} 채널 자동 프롬프트 v{new_version} 생성 완료!")
-            print(f"📝 페르소나: {auto_prompt['persona']}")
-            print(f"🎯 전문분야: {auto_prompt.get('expertise_keywords', [])[:3]}")
-            print(f"🎭 스타일: {auto_prompt.get('tone', '전문적')}")
+            print(f"✅ {channel_name} 채널 제로샷 AI 프롬프트 v{new_version} 생성 완료!")
+            print(f"📝 페르소나: {prompt_data.get('persona', 'N/A')}")
+            print(f"🎯 전문분야: {', '.join(prompt_data.get('expertise_keywords', [])[:3])}")
+            print(f"🤖 생성 모델: {prompt_data.get('model_used', 'N/A')}")
         
         return new_version
     

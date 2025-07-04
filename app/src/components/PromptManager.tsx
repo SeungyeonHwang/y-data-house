@@ -62,31 +62,31 @@ export const PromptManagerTab: React.FC = () => {
     }
   };
 
-  const generateAutoPrompt = async () => {
+  const generateZeroShotPrompt = async () => {
     if (!selectedChannel) return;
     
     try {
       setLoading(true);
       setError(null);
-      setSaveStatus('자동 프롬프트 생성 중...');
+      setSaveStatus('제로샷 AI 프롬프트 생성 중...');
       
       const newVersion = await invoke<number>('auto_generate_channel_prompt', {
         channelName: selectedChannel
       });
       
       if (newVersion > 0) {
-        setSaveStatus(`새 버전 v${newVersion}이 생성되었습니다.`);
+        setSaveStatus(`제로샷 AI로 새 버전 v${newVersion}이 생성되었습니다.`);
         // 새로 생성된 프롬프트 로드
         await loadChannelPrompt(selectedChannel);
         
         setTimeout(() => setSaveStatus(null), 3000);
       } else {
-        setError('자동 프롬프트 생성에 실패했습니다.');
+        setError('제로샷 AI 프롬프트 생성에 실패했습니다.');
       }
       
     } catch (err) {
-      console.error('자동 프롬프트 생성 실패:', err);
-      setError(`자동 프롬프트 생성 실패: ${err}`);
+      console.error('제로샷 AI 프롬프트 생성 실패:', err);
+      setError(`제로샷 AI 프롬프트 생성 실패: ${err}`);
     } finally {
       setLoading(false);
     }
@@ -190,12 +190,12 @@ export const PromptManagerTab: React.FC = () => {
               <h3>✏️ 프롬프트 편집</h3>
               <div className="editor-actions">
                 <button 
-                  onClick={generateAutoPrompt}
+                  onClick={generateZeroShotPrompt}
                   disabled={loading}
-                  className="auto-generate-button"
-                  title="벡터 데이터를 분석하여 자동으로 프롬프트 생성"
+                  className="zero-shot-button primary"
+                  title="AI가 채널을 분석해서 최적화된 프롬프트를 자동 생성"
                 >
-                  🤖 자동 생성
+                  🤖 제로샷 AI 생성
                 </button>
                 
                 <button 
@@ -217,7 +217,10 @@ export const PromptManagerTab: React.FC = () => {
                 <div className="info-item">
                   <span className="info-label">생성 방식:</span>
                   <span className={`info-value ${currentPrompt.auto_generated ? 'auto' : 'manual'}`}>
-                    {currentPrompt.auto_generated ? '🤖 자동 생성' : '✏️ 수동 편집'}
+                    {currentPrompt.auto_generated 
+                      ? '🤖 AI 자동 생성' 
+                      : '✏️ 수동 편집'
+                    }
                   </span>
                 </div>
                 <div className="info-item">
