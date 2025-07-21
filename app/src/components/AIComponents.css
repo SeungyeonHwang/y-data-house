@@ -351,7 +351,7 @@
 .form-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 8px;
 }
 
@@ -359,6 +359,34 @@
   margin: 0;
   color: #ecf0f1;
   font-size: 18px;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.advanced-settings-button {
+  background: #34495e;
+  color: #ecf0f1;
+  border: 1px solid #4a5f7a;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.advanced-settings-button:hover {
+  background: #3498db;
+  border-color: #3498db;
+  transform: translateY(-1px);
+}
+
+.advanced-settings-button:active {
+  transform: translateY(0);
 }
 
 .selected-channel-info {
@@ -455,33 +483,42 @@
   overflow: hidden;
 }
 
-.response-header {
+.ai-response-header {
   background: #34495e;
-  padding: 16px;
+  padding: 20px 24px;
   border-bottom: 1px solid #4a5f7a;
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 16px;
 }
 
 .response-info {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 16px;
   align-items: center;
+  flex: 1;
 }
 
 .channel-badge {
   background: #3498db;
   color: white;
-  padding: 4px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .response-time {
+  background: rgba(189, 195, 199, 0.1);
   color: #bdc3c7;
+  padding: 6px 12px;
+  border-radius: 12px;
   font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .response-actions {
@@ -493,15 +530,18 @@
   background: #5d6d7e;
   color: white;
   border: none;
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-size: 11px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
 .copy-button:hover {
   background: #4a5f7a;
+  transform: translateY(-1px);
 }
 
 .answer-content {
@@ -1456,34 +1496,6 @@
   box-shadow: 0 2px 8px rgba(155, 89, 182, 0.3);
 }
 
-.progress-step-horizontal.step-search {
-  background: #3498db;
-  border-color: #5dade2;
-  opacity: 1;
-  box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
-}
-
-.progress-step-horizontal.step-hyde {
-  background: #8e44ad;
-  border-color: #a569bd;
-  opacity: 1;
-  box-shadow: 0 2px 8px rgba(142, 68, 173, 0.3);
-}
-
-.progress-step-horizontal.step-context {
-  background: #1abc9c;
-  border-color: #48c9b0;
-  opacity: 1;
-  box-shadow: 0 2px 8px rgba(26, 188, 156, 0.3);
-}
-
-.progress-step-horizontal.step-thinking {
-  background: #f39c12;
-  border-color: #f8c471;
-  opacity: 1;
-  box-shadow: 0 2px 8px rgba(243, 156, 18, 0.3);
-}
-
 .step-checkbox {
   width: 20px;
   height: 20px;
@@ -1587,19 +1599,22 @@
 /* 신뢰도 표시 - Dark Mode */
 .confidence-indicator {
   font-weight: 600;
-  font-size: 0.85rem;
-  padding: 0.25rem 0.5rem;
+  font-size: 12px;
+  padding: 6px 12px;
   border-radius: 12px;
   background: rgba(52, 73, 94, 0.9);
   border: 1px solid currentColor;
+  white-space: nowrap;
 }
 
 .documents-found {
-  font-size: 0.85rem;
+  font-size: 12px;
   color: #bdc3c7;
-  background: rgba(52, 73, 94, 0.3);
-  padding: 0.25rem 0.5rem;
+  background: rgba(52, 73, 94, 0.5);
+  padding: 6px 12px;
   border-radius: 12px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 /* 관련 영상 섹션 개선 - Dark Mode */

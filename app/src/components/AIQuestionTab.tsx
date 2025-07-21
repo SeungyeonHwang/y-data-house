@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import ChannelSelector from './ChannelSelector';
 import AIAnswerComponent from './AIAnswerComponent';
+import { AdvancedSettingsPanel } from './AdvancedSettingsPanel';
+import { RAGSettings, DEFAULT_RAG_SETTINGS } from '../types/settings';
 
 interface VideoSource {
   video_id: string;
@@ -48,6 +50,11 @@ export const AIQuestionTab: React.FC = () => {
   const [response, setResponse] = useState<AIResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // 고급 설정 관련 상태
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [ragSettings, setRagSettings] = useState<RAGSettings>(DEFAULT_RAG_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [progress, setProgress] = useState<AIProgress | null>(null);
   const [progressHistory, setProgressHistory] = useState<AIProgress[]>([]);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
@@ -70,7 +77,32 @@ export const AIQuestionTab: React.FC = () => {
     if (savedModel) {
       setSelectedModel(savedModel);
     }
+
+    // RAG 설정 로드
+    loadRagSettings();
   }, []);
+
+  // RAG 설정 로드 함수
+  const loadRagSettings = async () => {
+    try {
+      const loadedSettings = await invoke<RAGSettings>('load_rag_settings');
+      setRagSettings(loadedSettings);
+      setShowAdvancedSettings(loadedSettings.ui_preferences.show_advanced_settings);
+      setSettingsLoaded(true);
+      console.log('✅ RAG 설정 로드됨:', loadedSettings);
+    } catch (error) {
+      console.error('❌ RAG 설정 로드 실패:', error);
+      setRagSettings(DEFAULT_RAG_SETTINGS);
+      setSettingsLoaded(true);
+    }
+  };
+
+  // 설정 변경 핸들러
+  const handleSettingsChange = (newSettings: RAGSettings) => {
+    setRagSettings(newSettings);
+    setShowAdvancedSettings(newSettings.ui_preferences.show_advanced_settings);
+    console.log('🔧 RAG 설정 업데이트됨:', newSettings);
+  };
 
   // 진행 상황 이벤트 리스너 설정 및 저장된 세션 로드
   useEffect(() => {
@@ -189,7 +221,7 @@ export const AIQuestionTab: React.FC = () => {
           typeof sourcesData[0] === 'object' && 'video_id' in sourcesData[0]) {
         return sourcesData.map((source, index) => ({
           video_id: source.video_id || `unknown_${Date.now()}_${index}`,
-          title: source.title || source.video_title || `영상 ${index + 1}`,
+          title: source.title || source.video_title || source.video_id || `영상 ${index + 1}`,
           timestamp: source.timestamp || undefined,
           relevance_score: source.relevance_score || source.similarity || 0.8,
           excerpt: source.excerpt || source.content || source.description || '내용 없음'
@@ -295,11 +327,12 @@ export const AIQuestionTab: React.FC = () => {
     const startTime = performance.now();
 
     try {
-      // 개선된 백엔드 호출
+      // 개선된 백엔드 호출 - RAG 설정 포함
       const resultStr = await invoke<string>('ask_ai_universal_with_progress', {
         query: query.trim(),
         channelName: selectedChannel,
-        model: selectedModel
+        model: selectedModel,
+        ragSettings: settingsLoaded ? ragSettings : DEFAULT_RAG_SETTINGS
       });
 
       const endTime = performance.now();
@@ -578,17 +611,31 @@ export const AIQuestionTab: React.FC = () => {
               <div className="progress-history horizontal">
                 <h4>🧠 AI 사고과정:</h4>
                 <div className="progress-steps-horizontal">
-                  {progressHistory.map((step, index) => (
-                    <div key={index} className={`progress-step-horizontal ${getProgressStepClass(step.step)}`}>
-                      <div className="step-checkbox">
-                        <div className="checkbox-mark">✓</div>
+                  {progressHistory.map((step, index) => {
+                    // 현재 진행중인 단계인지 확인 (가장 마지막 단계)
+                    const isCurrentStep = index === progressHistory.length - 1;
+                    // 완료된 단계인지 확인 (100% 또는 현재 단계가 아닌 경우)
+                    const isCompleted = step.progress >= 100 || !isCurrentStep;
+                    
+                    let statusClass = getProgressStepClass(step.step);
+                    if (isCompleted) {
+                      statusClass += ' step-complete';
+                    } else if (isCurrentStep) {
+                      statusClass += ' step-processing';
+                    }
+                    
+                    return (
+                      <div key={index} className={`progress-step-horizontal ${statusClass}`}>
+                        <div className="step-checkbox">
+                          <div className="checkbox-mark">✓</div>
+                        </div>
+                        <div className="step-label">
+                          <div className="step-title">{step.message}</div>
+                          <div className="step-percentage">{step.progress.toFixed(0)}%</div>
+                        </div>
                       </div>
-                      <div className="step-label">
-                        <div className="step-title">{step.message}</div>
-                        <div className="step-percentage">{step.progress.toFixed(0)}%</div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -600,16 +647,26 @@ export const AIQuestionTab: React.FC = () => {
           <form onSubmit={handleSubmit} className="question-form">
             <div className="form-header">
               <h3>💬 AI에게 질문하기</h3>
-              {selectedChannel && (
-                <div className="selected-info">
-                  <div className="selected-channel-info">
-                    📺 {selectedChannel} 채널
+              <div className="header-controls">
+                {selectedChannel && (
+                  <div className="selected-info">
+                    <div className="selected-channel-info">
+                      📺 {selectedChannel} 채널
+                    </div>
+                    <div className="selected-model-info">
+                      {getModelDisplayName(selectedModel)} 사용
+                    </div>
                   </div>
-                  <div className="selected-model-info">
-                    {getModelDisplayName(selectedModel)} 사용
-                  </div>
-                </div>
-              )}
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedSettings(true)}
+                  className="advanced-settings-button"
+                  title="고급 RAG 설정"
+                >
+                  ⚙️ 고급설정
+                </button>
+              </div>
             </div>
             
             <div className="form-body">
@@ -639,8 +696,8 @@ export const AIQuestionTab: React.FC = () => {
                       AI 답변 생성 중...
                     </>
                   ) : (
-                    `${getModelIcon(selectedModel)} ${getModelDisplayName(selectedModel)}로 질문하기`
-                                    )}
+                    `${getModelIcon(selectedModel)} 질문하기`
+                  )}
                 </button>
                 </div>
             </div>
@@ -699,6 +756,13 @@ export const AIQuestionTab: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* 고급 설정 패널 */}
+      <AdvancedSettingsPanel
+        isOpen={showAdvancedSettings}
+        onClose={() => setShowAdvancedSettings(false)}
+        onSettingsChange={handleSettingsChange}
+      />
     </div>
   );
 };

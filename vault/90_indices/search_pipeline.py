@@ -6,7 +6,7 @@ HyDE → Query Rewrite → Vector Search → Conditional Re-Rank
 조언 기반 최적화:
 - Re-Rank는 복잡한 쿼리에만 적용
 - 캐싱으로 LLM 호출 40% 절감
-- latency budget ≤ 400ms
+- latency budget ≤ 500ms (통일된 목표)
 """
 
 import os
@@ -69,6 +69,19 @@ class SearchPipeline:
         ]
         
         print("🔍 Search Pipeline 초기화 완료")
+    
+    def _get_relevance_category(self, similarity: float) -> str:
+        """유사도 점수를 기반으로 연관성 카테고리 분류"""
+        if similarity >= 0.8:
+            return "매우 높음"
+        elif similarity >= 0.6:
+            return "높음"
+        elif similarity >= 0.4:
+            return "보통"
+        elif similarity >= 0.2:
+            return "낮음"
+        else:
+            return "매우 낮음"
     
     def _classify_query_complexity(self, query: str) -> QueryType:
         """쿼리 복잡도 자동 분류"""
@@ -149,10 +162,10 @@ class SearchPipeline:
             return None
     
     def _generate_hyde_document(self, query: str, channel_name: str) -> Optional[str]:
-        """HyDE 문서 생성 (150 토큰 제한)"""
+        """HyDE 문서 생성 (100 토큰으로 단축)"""
         try:
             prompt = f"""당신은 {channel_name} 채널 전문가입니다. 
-다음 질문에 대한 완벽한 답변이 담긴 150토큰 내외의 가상 문서를 작성하세요.
+다음 질문에 대한 완벽한 답변이 담긴 100토큰 내외의 가상 문서를 작성하세요.
 
 질문: {query}
 
@@ -165,14 +178,14 @@ class SearchPipeline:
                     {"role": "system", "content": f"당신은 {channel_name} 채널 전문가입니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=150,
+                max_tokens=100,  # 150 → 100으로 단축
                 temperature=0.7
             )
             
             hyde_doc = response.choices[0].message.content.strip()
             generation_time = (time.time() - start_time) * 1000
             
-            print(f"🎯 HyDE 생성 완료 ({generation_time:.1f}ms): {hyde_doc[:50]}...")
+            print(f"🎯 HyDE 생성 완료 ({generation_time:.1f}ms, 100tok): {hyde_doc[:50]}...")
             return hyde_doc
             
         except Exception as e:
@@ -180,16 +193,16 @@ class SearchPipeline:
             return None
     
     def _rewrite_query(self, query: str, channel_name: str, context: str = "") -> Optional[str]:
-        """Query Rewriting - 채널 특화 키워드 삽입 (60 토큰 제한)"""
+        """Query Rewriting - 채널 특화 키워드 삽입 (40 토큰으로 단축)"""
         try:
             prompt = f"""당신은 {channel_name} 채널 전문 검색 최적화 전문가입니다. 
 사용자의 질문을 이 채널의 컨텐츠에서 검색하기 쉬운 형태로 재작성하세요.
 
 원본 질문: {query}
-채널 컨텍스트: {context[:200]}
+채널 컨텍스트: {context[:150]}
 
 {channel_name} 채널의 영상에서 찾을 수 있는 핵심 키워드와 개념을 포함한 검색 쿼리로 재작성하세요.
-**60토큰 이내로 간결하게 작성하세요.**"""
+**40토큰 이내로 간결하게 작성하세요.**"""
 
             start_time = time.time()
             response = self.client.chat.completions.create(
@@ -198,14 +211,14 @@ class SearchPipeline:
                     {"role": "system", "content": f"당신은 {channel_name} 채널 전문 검색 질의 최적화 전문가입니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=60,
+                max_tokens=40,  # 60 → 40으로 단축
                 temperature=0.3
             )
             
             rewritten = response.choices[0].message.content.strip()
             generation_time = (time.time() - start_time) * 1000
             
-            print(f"🔄 Query Rewrite 완료 ({generation_time:.1f}ms): {rewritten}")
+            print(f"🔄 Query Rewrite 완료 ({generation_time:.1f}ms, 40tok): {rewritten}")
             return rewritten
             
         except Exception as e:
@@ -235,7 +248,7 @@ class SearchPipeline:
                     {"role": "system", "content": f"당신은 {channel_name} 채널 전문 다각도 질문 생성 전문가입니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=200,
+                max_tokens=150,  # 200 → 150으로 단축
                 temperature=0.8  # 창의성을 위해 높은 temperature
             )
             
@@ -334,14 +347,25 @@ class SearchPipeline:
                 results['metadatas'][0], 
                 results['distances'][0]
             )):
+                # 영상 메타데이터 강화
+                safe_metadata = metadata if metadata else {}
                 formatted_results.append({
-                    'video_id': metadata.get('video_id', 'unknown') if metadata else 'unknown',
-                    'title': metadata.get('title', 'Unknown Title') if metadata else 'Unknown Title',
+                    'video_id': safe_metadata.get('video_id', 'unknown'),
+                    'title': safe_metadata.get('title', 'Unknown Title'),
                     'content': doc,
-                    'metadata': metadata if metadata else {},
+                    'metadata': {
+                        'upload_date': safe_metadata.get('upload_date', '날짜 미상'),
+                        'duration': safe_metadata.get('duration', '시간 미상'),
+                        'chunk_index': safe_metadata.get('chunk_index', 0),
+                        'chunk_start_time': safe_metadata.get('chunk_start_time', '00:00'),
+                        'channel': safe_metadata.get('channel', 'Unknown Channel'),
+                        'view_count': safe_metadata.get('view_count', 'N/A'),
+                        'description': safe_metadata.get('description', '')[:100] + '...' if safe_metadata.get('description') else 'N/A'
+                    },
                     'distance': distance,
                     'similarity': 1 - distance,
-                    'search_time_ms': search_time
+                    'search_time_ms': search_time,
+                    'relevance_category': self._get_relevance_category(1 - distance)
                 })
             
             print(f"📊 벡터 검색 완료 ({search_time:.1f}ms): {len(formatted_results)}개 문서")
@@ -375,29 +399,41 @@ class SearchPipeline:
                 content = candidate.get('content', '')[:300]  # 더 많은 컨텍스트
                 similarity = candidate.get('similarity', 0.0)
                 
-                # Cross-Encoder 스타일 정밀 점수 요청
-                scoring_prompt = f"""질문-문서 관련성을 정밀 평가하세요.
+                # 영상 메타데이터 추출
+                upload_date = candidate.get('metadata', {}).get('upload_date', '날짜 미상')
+                duration = candidate.get('metadata', {}).get('duration', '시간 미상')
+                chunk_time = candidate.get('metadata', {}).get('chunk_start_time', '00:00')
+                
+                # Cross-Encoder 스타일 정밀 점수 요청 (영상 정보 포함)
+                scoring_prompt = f"""질문과 영상 내용의 연관성을 정밀 평가하세요.
 
-질문: "{query}"
+## 사용자 질문
+"{query}"
 
-문서:
-제목: {title}
-내용: {content}
-벡터 유사도: {similarity:.3f}
+## 영상 정보
+📺 **제목**: {title}
+📅 **업로드**: {upload_date}
+⏱️ **길이**: {duration}
+📍 **구간**: {chunk_time}부터 시작하는 내용
+🔍 **벡터 유사도**: {similarity:.3f}
 
-**평가 기준:**
-1. 질문 핵심 의도와 문서 내용 일치도
-2. 구체적 답변 제공 능력
-3. {channel_name} 채널 맥락 적합성
-4. 정보 완성도와 신뢰성
+## 영상 내용
+{content}
 
-0.0~1.0 사이 정밀 점수만 출력 (예: 0.85)"""
+**영상 연관성 평가 기준:**
+1. 질문의 핵심 의도와 영상 내용의 직접적 일치도
+2. 영상에서 제공하는 구체적 답변의 완성도
+3. {channel_name} 채널 특성과 영상 맥락의 적합성
+4. 영상 정보의 신뢰성과 질문 해결 능력
+5. 다른 영상과의 차별화된 가치
+
+영상과 질문의 연관성 점수를 0.0~1.0 사이로 평가하세요 (예: 0.85)"""
 
                 try:
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=[
-                            {"role": "system", "content": f"정밀한 Cross-Encoder입니다. {channel_name} 채널 전문성을 가지고 객관적으로 평가하세요."},
+                            {"role": "system", "content": f"정밀한 영상-질문 연관성 평가자입니다. {channel_name} 채널의 영상 데이터베이스에서 질문과 가장 관련 높은 영상을 찾아 객관적으로 평가하세요."},
                             {"role": "user", "content": scoring_prompt}
                         ],
                         max_tokens=8,

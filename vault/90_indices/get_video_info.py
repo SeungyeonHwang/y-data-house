@@ -22,7 +22,21 @@ def get_video_info_from_chroma(video_id: str, channel_name: str):
     """Chroma DB에서 비디오 정보 조회"""
     try:
         client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-        collection = client.get_collection(channel_name)
+        
+        # 컬렉션명 정규화 (임베딩 생성 시와 동일한 방식)
+        collection_name = f"{channel_name}_embeddings"
+        print(f"🔍 컬렉션 조회: {collection_name}", file=sys.stderr)
+        
+        # 사용 가능한 컬렉션 목록 출력
+        collections = client.list_collections()
+        collection_names = [c.name for c in collections]
+        print(f"📋 사용 가능한 컬렉션: {collection_names}", file=sys.stderr)
+        
+        if collection_name not in collection_names:
+            print(f"⚠️ 컬렉션 '{collection_name}'이 존재하지 않음", file=sys.stderr)
+            return None
+            
+        collection = client.get_collection(collection_name)
         
         # video_id가 포함된 문서 검색
         results = collection.get(
@@ -30,10 +44,14 @@ def get_video_info_from_chroma(video_id: str, channel_name: str):
             include=["documents", "metadatas"]
         )
         
+        print(f"🔍 검색 결과: {len(results['documents'])}개 문서 발견", file=sys.stderr)
+        
         if results["documents"]:
             # 첫 번째 결과 사용
             metadata = results["metadatas"][0] if results["metadatas"] else {}
             document = results["documents"][0] if results["documents"] else ""
+            
+            print(f"📄 메타데이터: {metadata}", file=sys.stderr)
             
             return {
                 "video_id": video_id,
@@ -46,6 +64,8 @@ def get_video_info_from_chroma(video_id: str, channel_name: str):
     
     except Exception as e:
         print(f"Warning: Chroma DB에서 비디오 정보 조회 실패: {e}", file=sys.stderr)
+        import traceback
+        print(f"상세 오류: {traceback.format_exc()}", file=sys.stderr)
     
     return None
 

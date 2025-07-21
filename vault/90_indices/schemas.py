@@ -44,16 +44,16 @@ class SearchQuery(BaseModel):
     expansion_terms: List[str] = Field(default_factory=list, description="확장 키워드")
 
 class SearchConfig(BaseModel):
-    """검색 설정 - 전문가 조언 반영 버전"""
-    max_results: int = Field(default=12, description="벡터 검색 최대 결과 수 (12→top-6 re-rank)")
-    similarity_threshold: float = Field(default=0.20, description="1차 필터 유사도 임계값 (하이-리콜)")
+    """검색 설정 - 실제 사용값과 통일된 버전"""
+    max_results: int = Field(default=15, description="벡터 검색 최대 결과 수 (15→top-6 re-rank)")
+    similarity_threshold: float = Field(default=0.15, description="1차 필터 유사도 임계값 (균형점)")
     precision_threshold: float = Field(default=0.30, description="2차 필터 정밀도 임계값 (고-정밀)")
     enable_hyde: bool = Field(default=True, description="HyDE 활성화")
     enable_rewrite: bool = Field(default=True, description="Query Rewriting 활성화")
     enable_rerank: bool = Field(default=True, description="Re-ranking 활성화")
     enable_rag_fusion: bool = Field(default=True, description="RAG-Fusion 다중 쿼리 활성화")
     rag_fusion_queries: int = Field(default=4, description="RAG-Fusion 생성 쿼리 수 (3-5개 최적)")
-    rerank_threshold: float = Field(default=0.3, description="Re-rank 활성화 임계값")
+    rerank_threshold: float = Field(default=0.2, description="Re-rank 활성화 임계값 (낮춤)")
     rerank_top_k: int = Field(default=6, description="Re-ranking 대상 문서 수 (6개 최적)")
 
 class SearchResult(BaseModel):
@@ -83,13 +83,13 @@ class AnswerStyle(str, Enum):
     ANALYTICAL = "analytical"           # 분석형
 
 class AnswerConfig(BaseModel):
-    """답변 생성 설정 - 전문가 조언 반영"""
+    """답변 생성 설정 - 실제 사용값과 통일된 버전"""
     style: AnswerStyle = Field(default=AnswerStyle.BULLET_POINTS, description="답변 스타일")
     max_bullets: int = Field(default=5, description="최대 불릿 수")
     include_sources: bool = Field(default=True, description="출처 포함 여부")
     enable_self_refine: bool = Field(default=True, description="Self-Refine 활성화")
     enable_react: bool = Field(default=False, description="ReAct 패턴 활성화")
-    max_tokens: int = Field(default=650, description="최대 토큰 수 (600-750 최적)")
+    max_tokens: int = Field(default=800, description="최대 토큰 수 (JSON 응답 고려)")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="기본 생성 온도")
     enable_adaptive_temperature: bool = Field(default=True, description="적응형 Temperature 활성화")
     factual_temperature: float = Field(default=0.4, description="사실형 질문 온도")

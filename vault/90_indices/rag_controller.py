@@ -74,21 +74,21 @@ class RAGController:
         except Exception as e:
             raise ValueError(f"❌ Answer Pipeline 초기화 실패: {e}")
         
-        # 기본 설정 (매우 관대하게)
+        # 기본 설정 (균형점으로 조정)
         self.default_search_config = SearchConfig(
-            max_results=15,  # 10 → 15로 증가
+            max_results=15,  # schemas.py와 통일
             enable_hyde=True,
             enable_rewrite=True,
             enable_rerank=True,
-            rerank_threshold=0.2,  # 0.3 → 0.2로 낮춤
-            similarity_threshold=0.05  # 0.15 → 0.05로 대폭 낮춤 (매우 관대)
+            rerank_threshold=0.2,  # schemas.py와 통일
+            similarity_threshold=0.15  # schemas.py와 통일 (균형점)
         )
         
         self.default_answer_config = AnswerConfig(
             style=AnswerStyle.BULLET_POINTS,  # 기본 스타일 명시적 설정
             enable_self_refine=True,
             enable_react=False,  # 기본적으로 비활성화, 필요시에만
-            max_tokens=1200,  # 800 → 1200으로 증가 (JSON 응답 고려)
+            max_tokens=800,  # schemas.py와 통일
             temperature=0.7
         )
         
@@ -101,31 +101,31 @@ class RAGController:
         # 단순한 쿼리는 경량화하지만 충분한 문서 확보
         if query_type == QueryType.SIMPLE:
             config.enable_rerank = False  # Re-rank 생략
-            config.max_results = 12       # 8 → 12로 증가
-            config.similarity_threshold = 0.03  # 0.1 → 0.03으로 매우 관대하게
-            print("🔧 단순 쿼리: 관대한 경량 검색 모드")
+            config.max_results = 12       
+            config.similarity_threshold = 0.20  # 적당한 품질 유지
+            print("🔧 단순 쿼리: 균형잡힌 경량 검색 모드")
             
         # 복잡한 쿼리는 전체 파이프라인 활용
         elif query_type == QueryType.COMPLEX:
             config.enable_rerank = True
-            config.max_results = 15       # 10 → 15로 증가
-            config.rerank_threshold = 0.15  # 0.25 → 0.15로 낮춤
-            config.similarity_threshold = 0.08  # 0.2 → 0.08로 낮춤
-            print("🔧 복잡 쿼리: 관대한 고품질 검색 모드")
+            config.max_results = 15       
+            config.rerank_threshold = 0.2  # schemas.py와 통일
+            config.similarity_threshold = 0.12  # 적당히 관대하게
+            print("🔧 복잡 쿼리: 균형잡힌 고품질 검색 모드")
             
-        # 사실 확인 쿼리는 정확도 우선이지만 여전히 관대하게
+        # 사실 확인 쿼리는 정확도 우선
         elif query_type == QueryType.FACTUAL:
             config.enable_rerank = True
-            config.max_results = 12       # 8 → 12로 증가
-            config.similarity_threshold = 0.15  # 0.25 → 0.15로 낮춤
-            print("🔧 사실 확인: 관대한 정확도 우선 모드")
+            config.max_results = 12       
+            config.similarity_threshold = 0.25  # 정확성 우선
+            print("🔧 사실 확인: 정확도 우선 모드")
             
-        # 분석적 쿼리는 가장 폭넓은 검색
+        # 분석적 쿼리는 폭넓은 검색하되 Choice Overload 방지
         elif query_type == QueryType.ANALYTICAL:
             config.enable_rerank = True
-            config.max_results = 20       # 12 → 20으로 대폭 증가
-            config.similarity_threshold = 0.02  # 0.12 → 0.02로 매우 관대하게
-            print("🔧 분석적 쿼리: 최대한 관대한 폭넓은 검색 모드")
+            config.max_results = 15       # 20 → 15로 제한 (Choice Overload 방지)
+            config.similarity_threshold = 0.10  # 0.02 → 0.10으로 품질 개선
+            print("🔧 분석적 쿼리: 균형잡힌 폭넓은 검색 모드")
         
         return config
     
@@ -197,12 +197,12 @@ class RAGController:
             if search_config is None:
                 search_config = self._optimize_search_config(query, search_query.query_type)
             
-            # 빠른 모드에서도 관대한 결과 확보
+            # 빠른 모드에서도 적당한 품질 유지
             if fast_mode:
                 search_config.enable_rerank = False
                 search_config.enable_rewrite = False
-                search_config.max_results = 12    # 8 → 12로 증가
-                search_config.similarity_threshold = 0.03  # 매우 관대하게
+                search_config.max_results = 12    
+                search_config.similarity_threshold = 0.18  # 빠르지만 품질 유지
             
             # 3. 검색 실행
             search_start = time.time()
@@ -239,7 +239,7 @@ class RAGController:
             if fast_mode:
                 answer_config.enable_self_refine = False
                 answer_config.enable_react = False
-                answer_config.max_tokens = 800  # 400 → 800으로 증가
+                answer_config.max_tokens = 600  # 빠른 모드는 간결하게
             
             # 6. 답변 생성 요청 구성
             answer_request = AnswerRequest(
@@ -256,7 +256,10 @@ class RAGController:
             
             total_time = (time.time() - start_time) * 1000
             
-            # 8. 최종 응답 구성
+            # 8. 영상 연관성 분석 추가
+            video_relevance_analysis = self._analyze_video_relevance(search_result, query)
+            
+            # 9. 최종 응답 구성 (영상 연관성 정보 포함)
             rag_response = RAGResponse(
                 query_id=query_id,
                 channel_name=channel_name,
@@ -272,7 +275,8 @@ class RAGController:
                     "hyde_used": search_result.hyde_used,
                     "rewrite_used": search_result.rewrite_used,
                     "rerank_used": search_result.rerank_used,
-                    "avg_similarity": sum(doc.similarity for doc in search_result.documents) / len(search_result.documents) if search_result.documents else 0.0
+                    "avg_similarity": sum(doc.similarity for doc in search_result.documents) / len(search_result.documents) if search_result.documents else 0.0,
+                    "video_relevance": video_relevance_analysis
                 },
                 debug_info={
                     "query_type": search_query.query_type.value,
@@ -280,7 +284,8 @@ class RAGController:
                     "self_refined": answer_response.self_refined,
                     "react_steps": answer_response.react_steps,
                     "token_usage": answer_response.token_usage,
-                    "cache_used": self.cache is not None
+                    "cache_used": self.cache is not None,
+                    "video_database_focus": True  # 영상 데이터베이스 중심 표시
                 }
             )
             
@@ -363,7 +368,79 @@ class RAGController:
             cache_stats = self.cache.get_stats()
             health_status["performance"]["cache_hit_rate"] = cache_stats["hit_rate"]
         
-        return health_status 
+        return health_status
+    
+    def _analyze_video_relevance(self, search_result: SearchResult, query: str) -> Dict[str, Any]:
+        """영상 연관성 상세 분석"""
+        if not search_result.documents:
+            return {
+                "total_videos": 0,
+                "relevance_distribution": {},
+                "top_video": None,
+                "coverage_assessment": "영상 정보 없음"
+            }
+        
+        # 연관성 분포 계산
+        relevance_distribution = {
+            "매우 높음": 0,  # 0.8+
+            "높음": 0,       # 0.6-0.8
+            "보통": 0,       # 0.4-0.6
+            "낮음": 0,       # 0.2-0.4
+            "매우 낮음": 0   # 0.0-0.2
+        }
+        
+        video_details = []
+        for doc in search_result.documents:
+            # 연관성 카테고리 분류
+            if doc.similarity >= 0.8:
+                category = "매우 높음"
+            elif doc.similarity >= 0.6:
+                category = "높음"
+            elif doc.similarity >= 0.4:
+                category = "보통"
+            elif doc.similarity >= 0.2:
+                category = "낮음"
+            else:
+                category = "매우 낮음"
+            
+            relevance_distribution[category] += 1
+            
+            # 영상 상세 정보
+            metadata = doc.metadata if hasattr(doc, 'metadata') and doc.metadata else {}
+            video_details.append({
+                "video_id": doc.video_id,
+                "title": doc.title,
+                "similarity": doc.similarity,
+                "relevance_category": category,
+                "upload_date": metadata.get('upload_date', '날짜 미상'),
+                "chunk_position": metadata.get('chunk_index', 'N/A')
+            })
+        
+        # 최고 연관성 영상
+        top_video = max(video_details, key=lambda x: x['similarity']) if video_details else None
+        
+        # 커버리지 평가
+        high_relevance_count = relevance_distribution["매우 높음"] + relevance_distribution["높음"]
+        total_videos = len(search_result.documents)
+        
+        if high_relevance_count >= 3:
+            coverage = "우수 - 질문에 직접 관련된 영상 다수 확보"
+        elif high_relevance_count >= 1:
+            coverage = "양호 - 핵심 관련 영상 확보"
+        elif relevance_distribution["보통"] >= 2:
+            coverage = "보통 - 간접 관련 영상 활용 가능"
+        else:
+            coverage = "부족 - 직접 관련 영상 부족, 일반적 답변 제공"
+        
+        return {
+            "total_videos": total_videos,
+            "relevance_distribution": relevance_distribution,
+            "video_details": video_details[:5],  # 상위 5개만
+            "top_video": top_video,
+            "coverage_assessment": coverage,
+            "avg_relevance": sum(doc.similarity for doc in search_result.documents) / len(search_result.documents),
+            "video_database_quality": "높음" if high_relevance_count >= 2 else "보통" if high_relevance_count >= 1 else "낮음"
+        } 
     
     def _get_channel_fallback_info(self, channel_name: str, query: str) -> Optional[SearchResult]:
         """채널별 대표 정보 검색 (관련성 낮은 질문에 대한 fallback)"""

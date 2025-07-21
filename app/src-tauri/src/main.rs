@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use chrono;
+use serde_json;
 
 // HTTP 서버 관련 imports
 use warp::Filter;
@@ -34,6 +35,124 @@ struct VideoMetadata {
     video_id: Option<String>,
     source_url: Option<String>,
     excerpt: Option<String>,
+}
+
+// RAG 설정 관련 구조체들 (TypeScript와 동기화)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+enum QueryType {
+    Simple,
+    Complex,
+    Factual,
+    Analytical,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+enum AnswerStyle {
+    BulletPoints,
+    Structured,
+    Conversational,
+    Analytical,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct SearchConfig {
+    max_results: u32,
+    similarity_threshold: f64,
+    precision_threshold: f64,
+    enable_hyde: bool,
+    enable_rewrite: bool,
+    enable_rerank: bool,
+    enable_rag_fusion: bool,
+    rag_fusion_queries: u32,
+    rerank_threshold: f64,
+    rerank_top_k: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AnswerConfig {
+    style: AnswerStyle,
+    max_bullets: u32,
+    include_sources: bool,
+    enable_self_refine: bool,
+    enable_react: bool,
+    max_tokens: u32,
+    temperature: f64,
+    enable_adaptive_temperature: bool,
+    factual_temperature: f64,
+    analytical_temperature: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UIPreferences {
+    show_advanced_settings: bool,
+    show_debug_info: bool,
+    auto_expand_sources: bool,
+    theme: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PerformanceSettings {
+    target_response_time_ms: u32,
+    max_concurrent_searches: u32,
+    cache_ttl_hours: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct RAGSettings {
+    fast_mode: bool,
+    debug_mode: bool,
+    enable_cache: bool,
+    search_config: SearchConfig,
+    answer_config: AnswerConfig,
+    ui_preferences: UIPreferences,
+    performance: PerformanceSettings,
+}
+
+impl Default for RAGSettings {
+    fn default() -> Self {
+        RAGSettings {
+            fast_mode: false,
+            debug_mode: false,
+            enable_cache: true,
+            search_config: SearchConfig {
+                max_results: 15,
+                similarity_threshold: 0.15,
+                precision_threshold: 0.30,
+                enable_hyde: true,
+                enable_rewrite: true,
+                enable_rerank: true,
+                enable_rag_fusion: true,
+                rag_fusion_queries: 4,
+                rerank_threshold: 0.2,
+                rerank_top_k: 6,
+            },
+            answer_config: AnswerConfig {
+                style: AnswerStyle::BulletPoints,
+                max_bullets: 5,
+                include_sources: true,
+                enable_self_refine: true,
+                enable_react: false,
+                max_tokens: 800,
+                temperature: 0.7,
+                enable_adaptive_temperature: true,
+                factual_temperature: 0.4,
+                analytical_temperature: 0.65,
+            },
+            ui_preferences: UIPreferences {
+                show_advanced_settings: false,
+                show_debug_info: false,
+                auto_expand_sources: false,
+                theme: "auto".to_string(),
+            },
+            performance: PerformanceSettings {
+                target_response_time_ms: 500,
+                max_concurrent_searches: 1,
+                cache_ttl_hours: 168,
+            },
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1552,7 +1671,13 @@ async fn ask_rag(query: String) -> Result<String, String> {
 
 // 채널별 AI 질문 (DeepSeek, 실시간 진행 상황 포함)
 #[command]
-async fn ask_ai_with_progress(window: Window, query: String, channel_name: String, model: String) -> Result<String, String> {
+async fn ask_ai_with_progress(
+    window: Window, 
+    query: String, 
+    channel_name: String, 
+    model: String,
+    rag_settings: Option<RAGSettings>
+) -> Result<String, String> {
     let project_root = get_project_root();
     let rag_script = project_root.join("vault").join("90_indices").join("rag.py");
     
@@ -1569,8 +1694,30 @@ async fn ask_ai_with_progress(window: Window, query: String, channel_name: Strin
     });
 
     let venv_python = project_root.join("venv").join("bin").join("python");
+    
+    // RAG 설정을 JSON으로 직렬화
+    let settings_json = match rag_settings {
+        Some(settings) => serde_json::to_string(&settings).unwrap_or_default(),
+        None => String::new()
+    };
+    
+    let mut cmd_args = vec![
+        rag_script.to_str().unwrap(),
+        &query,
+        &channel_name,
+        "--progress",
+        "--model",
+        &model
+    ];
+    
+    // RAG 설정이 있으면 추가
+    if !settings_json.is_empty() {
+        cmd_args.push("--rag-settings");
+        cmd_args.push(&settings_json);
+    }
+    
     let mut child = Command::new(&venv_python)
-        .args(&[rag_script.to_str().unwrap(), &query, &channel_name, "--progress", "--model", &model])
+        .args(&cmd_args)
         .current_dir(&project_root)
         .env("PYTHONUNBUFFERED", "1")
         .stdout(Stdio::piped())
@@ -1714,8 +1861,14 @@ async fn ask_ai_with_progress(window: Window, query: String, channel_name: Strin
 
 // AI 질문 (실시간 진행 상황 포함)
 #[command]
-async fn ask_ai_universal_with_progress(window: Window, query: String, channel_name: String, model: String) -> Result<String, String> {
-    ask_ai_with_progress(window, query, channel_name, model).await
+async fn ask_ai_universal_with_progress(
+    window: Window, 
+    query: String, 
+    channel_name: String, 
+    model: String,
+    rag_settings: Option<RAGSettings>
+) -> Result<String, String> {
+    ask_ai_with_progress(window, query, channel_name, model, rag_settings).await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -3068,6 +3221,149 @@ async fn advanced_rag_search(
     }
 }
 
+// 설정 파일 경로 헬퍼 함수
+fn get_settings_file_path() -> PathBuf {
+    let project_root = get_project_root();
+    project_root.join("config").join("rag_settings.json")
+}
+
+// 설정 디렉토리 확인 및 생성
+fn ensure_config_directory() -> Result<(), String> {
+    let config_dir = get_project_root().join("config");
+    if !config_dir.exists() {
+        fs::create_dir_all(&config_dir)
+            .map_err(|e| format!("설정 디렉토리 생성 실패: {}", e))?;
+    }
+    Ok(())
+}
+
+// RAG 설정 저장
+#[command]
+async fn save_rag_settings(settings: RAGSettings) -> Result<String, String> {
+    ensure_config_directory()?;
+    
+    let settings_path = get_settings_file_path();
+    let settings_json = serde_json::to_string_pretty(&settings)
+        .map_err(|e| format!("설정 직렬화 실패: {}", e))?;
+    
+    fs::write(&settings_path, settings_json)
+        .map_err(|e| format!("설정 파일 저장 실패: {}", e))?;
+    
+    println!("✅ RAG 설정이 저장되었습니다: {}", settings_path.display());
+    Ok(format!("설정이 성공적으로 저장되었습니다: {}", settings_path.display()))
+}
+
+// RAG 설정 로드
+#[command]
+async fn load_rag_settings() -> Result<RAGSettings, String> {
+    let settings_path = get_settings_file_path();
+    
+    if !settings_path.exists() {
+        println!("🔧 설정 파일이 없어 기본값을 반환합니다: {}", settings_path.display());
+        return Ok(RAGSettings::default());
+    }
+    
+    let settings_content = fs::read_to_string(&settings_path)
+        .map_err(|e| format!("설정 파일 읽기 실패: {}", e))?;
+    
+    let settings: RAGSettings = serde_json::from_str(&settings_content)
+        .map_err(|e| format!("설정 파일 파싱 실패: {}", e))?;
+    
+    println!("✅ RAG 설정이 로드되었습니다: {}", settings_path.display());
+    Ok(settings)
+}
+
+// RAG 설정 초기화 (기본값으로 리셋)
+#[command]
+async fn reset_rag_settings() -> Result<String, String> {
+    let default_settings = RAGSettings::default();
+    save_rag_settings(default_settings).await
+}
+
+// 설정 프리셋 적용
+#[command]
+async fn apply_rag_preset(preset_name: String) -> Result<RAGSettings, String> {
+    let settings = match preset_name.as_str() {
+        "default" => RAGSettings::default(),
+        "fast" => {
+            let mut settings = RAGSettings::default();
+            settings.fast_mode = true;
+            settings.search_config.enable_rerank = false;
+            settings.search_config.enable_rag_fusion = false;
+            settings.search_config.max_results = 8;
+            settings.answer_config.enable_self_refine = false;
+            settings.answer_config.max_tokens = 600;
+            settings
+        },
+        "quality" => {
+            let mut settings = RAGSettings::default();
+            settings.search_config.enable_rerank = true;
+            settings.search_config.enable_rag_fusion = true;
+            settings.search_config.max_results = 20;
+            settings.search_config.rerank_top_k = 8;
+            settings.answer_config.enable_self_refine = true;
+            settings.answer_config.enable_react = true;
+            settings.answer_config.max_tokens = 1200;
+            settings
+        },
+        "research" => {
+            let mut settings = RAGSettings::default();
+            settings.debug_mode = true;
+            settings.search_config.similarity_threshold = 0.05;
+            settings.search_config.max_results = 25;
+            settings.search_config.enable_rag_fusion = true;
+            settings.search_config.rag_fusion_queries = 6;
+            settings.answer_config.style = AnswerStyle::Analytical;
+            settings.answer_config.enable_react = true;
+            settings.answer_config.max_tokens = 1500;
+            settings.ui_preferences.show_advanced_settings = true;
+            settings.ui_preferences.show_debug_info = true;
+            settings.ui_preferences.auto_expand_sources = true;
+            settings
+        },
+        _ => return Err(format!("알 수 없는 프리셋: {}", preset_name))
+    };
+    
+    save_rag_settings(settings.clone()).await?;
+    Ok(settings)
+}
+
+// 설정 파일 존재 여부 확인
+#[command]
+async fn check_rag_settings_exists() -> Result<bool, String> {
+    let settings_path = get_settings_file_path();
+    Ok(settings_path.exists())
+}
+
+// 설정 검증
+#[command]
+async fn validate_rag_settings(settings: RAGSettings) -> Result<RAGSettings, String> {
+    // 범위 검증 및 수정
+    let mut validated = settings;
+    
+    // SearchConfig 검증
+    validated.search_config.max_results = validated.search_config.max_results.clamp(1, 50);
+    validated.search_config.similarity_threshold = validated.search_config.similarity_threshold.clamp(0.0, 1.0);
+    validated.search_config.precision_threshold = validated.search_config.precision_threshold.clamp(0.0, 1.0);
+    validated.search_config.rag_fusion_queries = validated.search_config.rag_fusion_queries.clamp(2, 8);
+    validated.search_config.rerank_threshold = validated.search_config.rerank_threshold.clamp(0.0, 1.0);
+    validated.search_config.rerank_top_k = validated.search_config.rerank_top_k.clamp(1, 20);
+    
+    // AnswerConfig 검증
+    validated.answer_config.max_bullets = validated.answer_config.max_bullets.clamp(1, 10);
+    validated.answer_config.max_tokens = validated.answer_config.max_tokens.clamp(100, 2000);
+    validated.answer_config.temperature = validated.answer_config.temperature.clamp(0.0, 2.0);
+    validated.answer_config.factual_temperature = validated.answer_config.factual_temperature.clamp(0.0, 1.0);
+    validated.answer_config.analytical_temperature = validated.answer_config.analytical_temperature.clamp(0.0, 1.0);
+    
+    // Performance 검증
+    validated.performance.target_response_time_ms = validated.performance.target_response_time_ms.clamp(100, 10000);
+    validated.performance.max_concurrent_searches = validated.performance.max_concurrent_searches.clamp(1, 5);
+    validated.performance.cache_ttl_hours = validated.performance.cache_ttl_hours.clamp(1, 720); // 1시간~30일
+    
+    Ok(validated)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
@@ -3125,7 +3421,13 @@ fn main() {
             check_channel_integrity,
             get_rag_controller_status,
             clear_rag_cache,
-            advanced_rag_search
+            advanced_rag_search,
+            save_rag_settings,
+            load_rag_settings,
+            reset_rag_settings,
+            apply_rag_preset,
+            check_rag_settings_exists,
+            validate_rag_settings
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

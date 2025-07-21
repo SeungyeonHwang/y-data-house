@@ -169,18 +169,28 @@ class AnswerPipeline:
         )
     
     def _build_context(self, search_result: SearchResult, max_context_length: int = 2000) -> str:
-        """검색 결과로부터 컨텍스트 구성 (비디오 ID 포함)"""
+        """검색 결과로부터 컨텍스트 구성 (영상 연관성 정보 강화)"""
         if not search_result.documents:
             return "검색된 문서가 없습니다."
         
         context_parts = []
         for i, doc in enumerate(search_result.documents[:6]):  # 전문가 조언: top-6 chunk × 최대 800 tok가 LLM-window 최적
-            # 비디오 ID와 제목을 명확하게 표시
+            # 영상 메타데이터 추출 (안전하게)
+            metadata = doc.metadata if hasattr(doc, 'metadata') and doc.metadata else {}
+            upload_date = metadata.get('upload_date', '날짜 미상')
+            duration = metadata.get('duration', '시간 미상')
+            chunk_index = metadata.get('chunk_index', 'N/A')
+            
+            # 영상 연관성 정보 강화
             context_part = f"""
-📺 **영상 {i+1}** (ID: {doc.video_id})
+📺 **영상 {i+1}** [{doc.video_id}]
 📝 **제목**: {doc.title}
-🔍 **유사도**: {doc.similarity:.3f}
-📖 **내용**: {doc.content[:400]}...
+📅 **업로드**: {upload_date}
+⏱️ **영상 길이**: {duration}
+🔍 **연관성 점수**: {doc.similarity:.3f} (매우 높음: 0.8+, 높음: 0.6+, 보통: 0.4+)
+📍 **청크 위치**: {chunk_index}번째 구간
+📖 **관련 내용**: {doc.content[:400]}...
+🎯 **이 영상의 가치**: {'핵심 답변 제공' if doc.similarity > 0.7 else '보조 정보 제공' if doc.similarity > 0.5 else '참고 자료'}
 ---"""
             context_parts.append(context_part)
         
@@ -194,40 +204,73 @@ class AnswerPipeline:
     def _get_json_schema_instruction(self, config: AnswerConfig) -> str:
         """JSON 스키마 지시사항 생성 (명확하고 강제적)"""
         
-        # 스타일별 예시
+        # 스타일별 예시 (도움이 되는 답변 중심)
         if config.style == AnswerStyle.BULLET_POINTS:
             format_example = """
 {
-  "answer": "## 🎯 핵심 답변\\n\\n• **첫 번째 포인트**: 구체적인 설명 내용 [video_id_1]\\n• **두 번째 포인트**: 추가 설명 내용 [video_id_2]\\n• **세 번째 포인트**: 보충 설명 내용 [video_id_3]",
+  "answer": "## 🎯 핵심 답변\\n\\n• **영상 기반 정보**: 구체적인 설명 내용 [video_id_1]\\n• **추가 전문 지식**: 영상에서 다루지 않았지만 관련된 유용한 정보\\n• **실전 조언**: 종합적인 가이드 및 주의사항 [video_id_2]\\n\\n## 📚 정보 출처 구분\\n- 🎬 영상 정보: [video_id] 표시\\n- 🧠 전문 지식: 일반적으로 알려진 정보",
   "key_points": [
-    "첫 번째 핵심 포인트 요약",
-    "두 번째 핵심 포인트 요약", 
-    "세 번째 핵심 포인트 요약"
+    "영상에서 확인된 핵심 포인트",
+    "추가로 알아두면 좋은 관련 정보", 
+    "실용적인 조언 및 주의사항"
   ],
+  "video_connections": [
+    {
+      "video_id": "20231201_investment_guide",
+      "title": "부동산 투자 가이드",
+      "relevance_score": 0.92,
+      "connection_reason": "질문의 핵심 주제인 투자 전략을 직접적으로 다루고 있음",
+      "key_content": "도쿄 아파트 투자 수익률 분석 및 실전 팁",
+      "usage_in_answer": "첫 번째 포인트의 근거 자료로 활용"
+    }
+  ],
+  "additional_insights": "영상에서 직접 다루지 않았지만 질문 해결에 도움되는 보완 정보들",
   "sources": [
     {"video_id": "20231201_investment_guide", "relevance": "투자 전략 설명"},
     {"video_id": "20231215_market_analysis", "relevance": "시장 분석 내용"}
   ],
   "confidence": 0.85,
-  "summary": "3문장으로 요약한 핵심 내용"
+  "summary": "영상 정보와 전문 지식을 종합한 완전한 답변"
 }"""
         elif config.style == AnswerStyle.DETAILED_EXPLANATION:
             format_example = """
 {
-  "answer": "## 📋 상세 분석\\n\\n**배경**: 상황 설명...\\n\\n**핵심 내용**: 자세한 설명... [video_id_1]\\n\\n**추가 고려사항**: 보충 설명... [video_id_2]",
-  "key_points": ["요점 1", "요점 2", "요점 3"],
+  "answer": "## 📋 상세 분석\\n\\n**영상 기반 분석**: 자세한 설명... [video_id_1]\\n\\n**보완 정보**: 영상에서 다루지 않은 관련 전문 지식\\n\\n**종합 결론**: 완전한 분석 결과 [video_id_2]",
+  "key_points": ["영상 확인 요점", "추가 전문 지식", "실용적 결론"],
+  "video_connections": [
+    {
+      "video_id": "actual_video_id",
+      "title": "실제 영상 제목",
+      "relevance_score": 0.88,
+      "connection_reason": "상세 분석의 근거가 되는 핵심 내용 포함",
+      "key_content": "영상에서 다룬 구체적 내용",
+      "usage_in_answer": "상세 분석 섹션의 주요 근거로 활용"
+    }
+  ],
+  "additional_insights": "영상에 없지만 분석에 필요한 보완 정보",
   "sources": [{"video_id": "actual_video_id", "relevance": "관련성 설명"}],
   "confidence": 0.80,
-  "summary": "핵심 요약"
+  "summary": "영상과 전문지식을 종합한 완전한 분석"
 }"""
         else:  # SUMMARY
             format_example = """
 {
-  "answer": "## 📝 요약\\n\\n핵심 내용을 간결하게 정리... [video_id_1]",
-  "key_points": ["요점 1", "요점 2"],
+  "answer": "## 📝 요약\\n\\n🎬 **영상 요약**: 핵심 내용 정리... [video_id_1]\\n🧠 **추가 정보**: 보완적인 전문 지식\\n💡 **결론**: 종합적인 요약",
+  "key_points": ["영상 핵심 요점", "보완 정보", "최종 결론"],
+  "video_connections": [
+    {
+      "video_id": "actual_video_id",
+      "title": "실제 영상 제목",
+      "relevance_score": 0.85,
+      "connection_reason": "요약의 핵심 근거가 되는 내용",
+      "key_content": "영상의 주요 포인트",
+      "usage_in_answer": "요약 내용의 직접적 근거"
+    }
+  ],
+  "additional_insights": "영상 외 유용한 관련 정보",
   "sources": [{"video_id": "actual_video_id", "relevance": "관련성"}],
   "confidence": 0.75,
-  "summary": "한 줄 요약"
+  "summary": "완전하고 유용한 요약"
 }"""
         
         return f"""
@@ -243,14 +286,19 @@ class AnswerPipeline:
 
 1. **JSON 형식 필수**: 다른 텍스트 없이 오직 JSON만 출력
 2. **실제 video_id 사용**: [video_id_1] 형태로 실제 영상 ID 표시
-3. **sources 배열**: 각 출처의 video_id와 relevance 명시
-4. **confidence**: 0.0~1.0 사이의 정확한 수치
-5. **한글 사용**: 모든 내용은 한글로 작성
+3. **video_connections 배열**: 각 영상과 질문의 연관성을 상세히 설명
+4. **additional_insights 필드**: 영상에 없지만 유용한 보완 정보 제공
+5. **sources 배열**: 각 출처의 video_id와 relevance 명시
+6. **confidence**: 0.0~1.0 사이의 정확한 수치
+7. **한글 사용**: 모든 내용은 한글로 작성
 
-## 🎯 video_id 표시 방법:
-- 검색된 영상의 실제 ID 사용 (예: 20231201_investment_guide)
-- answer 필드에 [video_id] 형태로 출처 표시
-- sources 배열에 상세 정보 포함
+## 🎯 도움이 되는 답변 작성 방법:
+- **영상 우선**: 가능한 한 영상 내용을 주요 근거로 활용
+- **적극적 보완**: 영상에 없는 내용도 질문 해결에 도움된다면 적극 포함
+- **출처 구분**: 영상 정보(🎬)와 일반 전문지식(🧠)을 명확히 구분
+- **완전한 답변**: 질문자가 만족할 수 있는 완전하고 유용한 정보 제공
+- **실용성 중심**: 이론보다는 실제 도움이 되는 구체적 정보 우선
+- **관련성 확장**: 질문과 간접적으로라도 관련된 유용한 정보 포함
 """
     
     def _extract_json_from_response(self, response_text: str) -> Dict[str, Any]:
@@ -459,8 +507,8 @@ Final Answer: 다음 단계 결정
         # 적응형 Temperature 계산 (전문가 조언 반영)
         adaptive_temp = self._get_adaptive_temperature(request.original_query, request.config)
         
-        # 경량 프롬프트 구성
-        system_message = f"{channel_prompt.system_prompt} {channel_prompt.tone}으로 답변하세요."
+        # 도움이 되는 답변 중심 시스템 프롬프트
+        system_message = f"{channel_prompt.system_prompt} {channel_prompt.tone}으로 답변하되, 영상에 없는 내용이라도 질문 해결에 도움이 된다면 적극적으로 포함하여 완전하고 유용한 답변을 제공하세요."
         
         user_prompt = f"""## 검색된 컨텍스트 ({request.search_result.channel_name} 채널)
 {context}
@@ -471,16 +519,21 @@ Final Answer: 다음 단계 결정
 ## 사용자 질문
 {request.original_query}
 
-## 답변 지시사항
-- {request.search_result.channel_name} 채널의 정보만 활용
-- {request.config.style.value} 스타일로 작성
-- 실제 비디오 ID를 [video_id] 형태로 명시적 표시
-- 출처의 관련성을 구체적으로 설명
-- 모르는 내용은 추측하지 말고 "정보 부족" 명시
+## 🎯 도움이 되는 답변 제공 지시사항
+- **영상 우선 활용**: {request.search_result.channel_name} 채널의 영상 내용을 주요 근거로 활용
+- **영상별 연관성 명시**: 각 영상이 질문과 어떻게 연결되는지 구체적으로 설명
+- **보완 정보 제공**: 영상에서 직접 다루지 않지만 질문과 관련된 유용한 정보도 포함
+- **video_connections 포함**: 영상과 질문의 연관성 점수와 구체적 근거 포함
+- **적극적 답변**: 영상 정보 + 채널 특성 + 일반적 전문 지식을 종합하여 최대한 도움되는 답변 제공
+- **정보 구분**: 영상 기반 정보와 추가 전문 지식을 명확히 구분하여 표시
+- **스타일**: {request.config.style.value} 형식으로 작성
+- **출처 표시**: [video_id] 형태로 영상 ID 명시적 표시
 
 {json_instruction}
 
-**중요**: 반드시 위 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요."""
+**핵심**: 사용자에게 최대한 도움이 되는 답변을 제공하세요. 
+영상 내용을 주요 근거로 하되, 질문 해결에 필요한 추가 정보도 적극적으로 포함하여 완전한 답변을 만드세요.
+정보의 출처(영상 vs 일반 지식)는 명확히 구분하여 표시하세요."""
         
         try:
             start_time = time.time()

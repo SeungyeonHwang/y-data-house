@@ -78,20 +78,27 @@ export const AIAnswerComponent: React.FC<AIAnswerComponentProps> = ({ response }
         setLoadingVideos(prev => new Set(prev).add(videoId));
         
         try {
+          console.log(`🔍 비디오 상세 정보 요청: videoId=${videoId}, channel=${response.channel_used}`);
+          
           // 백엔드에서 비디오 상세 정보 로드
           const details = await invoke<VideoDetails>('get_video_details', {
             videoId: videoId,
             channelName: response.channel_used
           });
           
+          console.log(`✅ 비디오 상세 정보 로드 성공:`, details);
           setVideoDetails(prev => new Map(prev).set(videoId, details));
         } catch (err) {
-          console.error(`비디오 ${videoId} 상세 정보 로드 실패:`, err);
-          // 실패 시 기본 정보로 표시
+          console.error(`❌ 비디오 ${videoId} 상세 정보 로드 실패:`, err);
+          
+          // 실패 시에도 sources에서 가져온 정보 활용
+          const sourceInfo = response.sources?.find(s => s.video_id === videoId);
+          const fallbackTitle = sourceInfo?.title !== videoId ? sourceInfo?.title : `영상 ${videoId}`;
+          
           setVideoDetails(prev => new Map(prev).set(videoId, {
             video_id: videoId,
-            title: `영상 ${videoId}`,
-            transcript: '자막 정보를 불러올 수 없습니다.'
+            title: fallbackTitle || `영상 ${videoId}`,
+            transcript: sourceInfo?.excerpt || '자막 정보를 불러올 수 없습니다.'
           }));
         } finally {
           setLoadingVideos(prev => {
@@ -361,18 +368,6 @@ export const AIAnswerComponent: React.FC<AIAnswerComponentProps> = ({ response }
         </div>
       )}
       
-      <div className="response-footer">
-        <div className="response-meta">
-          <span className="generation-info">
-            🤖 AI 답변 • {response.channel_used} 채널 기반
-          </span>
-          {response.processing_time && (
-            <span className="processing-time">
-              • 처리시간: {response.processing_time.toFixed(1)}ms
-            </span>
-          )}
-        </div>
-      </div>
     </div>
   );
 };
